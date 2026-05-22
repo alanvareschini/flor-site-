@@ -1,0 +1,20 @@
+services:
+  flor-alva:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flor-alva-dev
+    ports:
+      - "${HOST_PORT:-3001}:3001"
+    environment:
+      NODE_ENV: development
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    command: sh -c "npm run dev -- --hostname 0.0.0.0"
+    restart: unless-stopped
+
+volumes:
+  node_modules:

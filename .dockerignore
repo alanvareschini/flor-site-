@@ -1,0 +1,16 @@
+.git
+.gitignore
+.next
+node_modules
+out
+dist
+*.log
+npm-debug.log
+tsconfig.tsbuildinfo
+.env*.local
+.vscode
+
+# Local analysis and generated scratch files
+tmp*
+.tmp*
+.analysis*
