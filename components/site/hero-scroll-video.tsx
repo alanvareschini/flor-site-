@@ -46,6 +46,10 @@ const TOUCH_FORCE = 0.0005;
 const KEY_FORCE = 0.05;
 const OPENING_MAX_SCROLL_VELOCITY = 0.24;
 const OPENING_VELOCITY_DECAY = 0.82;
+const TAO_SMOOTH_SCROLL_FORCE = 0.002;
+const TAO_SMOOTH_SCROLL_DECAY = 0.9;
+const TAO_SMOOTH_SCROLL_LIMIT = 0.02;
+const TAO_SMOOTH_WHEEL_MS = 150;
 const TAO_MAX_SCROLL_IMPULSE = 0.05;
 const TAO_WHEEL_DECAY = 0.8;
 const TAO_TOUCH_DECAY = 0.85;
@@ -108,8 +112,6 @@ uniform vec2 accel;
 uniform vec4 waveAmpFreq;
 uniform vec4 waveSpeedBlend;
 uniform vec4 pixels;
-uniform float velocity;
-uniform float direction;
 uniform sampler2D texture1;
 uniform sampler2D texture2;
 
@@ -129,16 +131,11 @@ float tri(float v) {
 
 void main() {
   vec2 uv = gl_FragCoord.xy / pixels.xy;
-  float p = clamp(progress, 0.0, 1.0);
-  float speed = clamp(velocity, 0.0, 1.0);
-  float transitionEnergy = tri(p);
-  float directionalLead = direction * (uv.x - 0.5) * speed * 0.12;
+  float p = fract(progress + mask.z);
 
   float delayValue = p * (1.0 + translateDelay.z + translateDelay.w)
                    - uv.y * translateDelay.w
-                   - (1.0 - uv.x) * translateDelay.z
-                   + directionalLead
-                   + transitionEnergy * speed * 0.045;
+                   - (1.0 - uv.x) * translateDelay.z;
   delayValue = clamp(delayValue, 0.0, 1.0);
 
   vec2 translateValue = p + delayValue * accel;
@@ -146,8 +143,6 @@ void main() {
   vec2 translateValue2 = translateDelay.xy * (translateValue - 1.0 - accel);
   vec2 w = sin(time.y * waveSpeedBlend.xy + vUv.yx * waveAmpFreq.zw) * waveAmpFreq.xy;
   vec2 xy = (tri(p) * waveSpeedBlend.z + tri(delayValue) * waveSpeedBlend.w) * w;
-  xy.x += sin(time.y * 0.6 + vUv.y * 6.2831853) * direction * speed * transitionEnergy * 0.012;
-  xy.y *= 1.0 + speed * 0.35;
 
   vec2 uv1 = vUv1 + translateValue1 + xy;
   vec2 uv2 = vUv2 + translateValue2 + xy;
@@ -206,28 +201,29 @@ function smoothStep(edge0: number, edge1: number, value: number) {
   return t * t * (3 - 2 * t);
 }
 
-function easeOutQuart(value: number) {
-  const t = clamp(value, 0, 1);
-  return 1 - Math.pow(1 - t, 4);
-}
-
-function mixNumber(from: number, to: number, amount: number) {
-  return from + (to - from) * amount;
-}
-
-function shapeSlideProgress(progress: number, direction: number) {
-  const forward = (value: number) =>
-    mixNumber(easeOutQuart(value), smoothStep(0, 1, value), 0.22);
-
-  if (direction < 0) {
-    return 1 - forward(1 - clamp(progress, 0, 1));
-  }
-
-  return forward(progress);
-}
-
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function normalizeWheelAmount(event: WheelEvent) {
+  const dominantDelta =
+    Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    return dominantDelta * 40;
+  }
+
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    return dominantDelta * Math.max(window.innerHeight, 720);
+  }
+
+  return dominantDelta;
+}
+
+function shouldUseTaoSmoothWheelPath() {
+  const platform = `${navigator.platform} ${navigator.userAgent}`;
+
+  return !/(Mac|iPhone|iPad|iPod)/i.test(platform);
 }
 
 function modulo(value: number, total: number) {
@@ -831,6 +827,9 @@ export function HeroScrollVideoSection() {
   const targetWorkPositionRef = useRef(0);
   const workPositionRef = useRef(0);
   const scrollVelocityRef = useRef(0);
+  const smoothScrollImpulseRef = useRef(0);
+  const smoothWheelDirectionRef = useRef(0);
+  const smoothWheelPulseUntilRef = useRef(0);
   const touchImpulseRef = useRef(0);
   const visualVelocityRef = useRef(0);
   const scrollDirectionRef = useRef(1);
@@ -1497,6 +1496,12 @@ export function HeroScrollVideoSection() {
     });
   };
 
+  const warmSlidePosterLibrary = () => {
+    WORKS.forEach((work) => {
+      createPosterTextureSlot(work.poster);
+    });
+  };
+
   const disposeSlidePreviewEntry = (index: number) => {
     const entry = slidePreviewEntriesRef.current.get(index);
     if (!entry) return;
@@ -1674,8 +1679,8 @@ export function HeroScrollVideoSection() {
       (index) => slidePreviewEntriesRef.current.get(index)?.state === "queued"
     );
     slidePreviewEntriesRef.current.forEach((entry, index) => {
-      if (!slidePreviewDesiredRef.current.has(index)) {
-        disposeSlidePreviewEntry(index);
+      if (!slidePreviewDesiredRef.current.has(index) && !entry.video.paused) {
+        entry.video.pause();
       }
     });
     slidePreviewQueueRef.current = desiredQueue;
@@ -2073,6 +2078,9 @@ export function HeroScrollVideoSection() {
 
     activeTweenRef.current?.kill();
     scrollVelocityRef.current = 0;
+    smoothScrollImpulseRef.current = 0;
+    smoothWheelDirectionRef.current = 0;
+    smoothWheelPulseUntilRef.current = 0;
     touchImpulseRef.current = 0;
     visualVelocityRef.current = 0;
     targetWorkPositionRef.current = targetWorkIndex;
@@ -2235,6 +2243,7 @@ export function HeroScrollVideoSection() {
 
     initSlideShaderRuntime();
     resizeSlideShaderRuntime();
+    warmSlidePosterLibrary();
     requestSlidePreviewRange(initialWorkIndex);
 
     const setFrame = (frameNumber: number) => {
@@ -2303,19 +2312,36 @@ export function HeroScrollVideoSection() {
 
       if (hasTargetTween) {
         scrollVelocityRef.current = 0;
+        smoothScrollImpulseRef.current = 0;
+        smoothWheelDirectionRef.current = 0;
+        smoothWheelPulseUntilRef.current = 0;
         touchImpulseRef.current = 0;
       } else {
+        if (now < smoothWheelPulseUntilRef.current) {
+          smoothScrollImpulseRef.current +=
+            smoothWheelDirectionRef.current * TAO_SMOOTH_SCROLL_FORCE * frameScale;
+        }
+
+        smoothScrollImpulseRef.current = clamp(
+          smoothScrollImpulseRef.current,
+          -TAO_SMOOTH_SCROLL_LIMIT,
+          TAO_SMOOTH_SCROLL_LIMIT
+        );
         scrollVelocityRef.current = clamp(
-          scrollVelocityRef.current + touchImpulseRef.current * frameScale,
+          scrollVelocityRef.current +
+            smoothScrollImpulseRef.current * frameScale +
+            touchImpulseRef.current * frameScale,
           -TAO_MAX_SCROLL_IMPULSE,
           TAO_MAX_SCROLL_IMPULSE
         );
         targetWorkPositionRef.current += scrollVelocityRef.current;
+        smoothScrollImpulseRef.current *= TAO_SMOOTH_SCROLL_DECAY;
         touchImpulseRef.current *= TAO_TOUCH_DECAY;
         scrollVelocityRef.current *= TAO_WHEEL_DECAY;
 
         const canSnap =
           now - lastScrollInputAtRef.current > SCROLL_SNAP_IDLE_MS &&
+          Math.abs(smoothScrollImpulseRef.current) < TAO_SNAP_THRESHOLD &&
           Math.abs(scrollVelocityRef.current) < TAO_SNAP_THRESHOLD &&
           Math.abs(touchImpulseRef.current) < TAO_SNAP_THRESHOLD;
 
@@ -2333,24 +2359,29 @@ export function HeroScrollVideoSection() {
         ) {
           targetWorkPositionRef.current = settleTarget;
           scrollVelocityRef.current = 0;
+          smoothScrollImpulseRef.current = 0;
           touchImpulseRef.current = 0;
         }
       }
 
       const previousVisualPosition = workPositionRef.current;
       const targetDistance = targetWorkPositionRef.current - previousVisualPosition;
-      const response = clamp(
-        VISUAL_PROGRESS_RESPONSE_MIN +
-          Math.abs(targetDistance) * 0.2 +
-          Math.abs(scrollVelocityRef.current) * 4 +
-          Math.abs(touchImpulseRef.current) * 3 +
-          (hasTargetTween ? 0.08 : 0),
-        VISUAL_PROGRESS_RESPONSE_MIN,
-        VISUAL_PROGRESS_RESPONSE_MAX
-      );
-      const responsePerFrame = 1 - Math.pow(1 - response, frameScale);
+      if (hasTargetTween) {
+        const response = clamp(
+          VISUAL_PROGRESS_RESPONSE_MIN +
+            Math.abs(targetDistance) * 0.2 +
+            0.08,
+          VISUAL_PROGRESS_RESPONSE_MIN,
+          VISUAL_PROGRESS_RESPONSE_MAX
+        );
+        const responsePerFrame = 1 - Math.pow(1 - response, frameScale);
 
-      workPositionRef.current += targetDistance * responsePerFrame;
+        workPositionRef.current += targetDistance * responsePerFrame;
+      } else {
+        // Tao integrates wheel/touch inertia directly into the rendered slide
+        // position. A second visual lerp here makes the WebGL transition late.
+        workPositionRef.current = targetWorkPositionRef.current;
+      }
 
       const visualDelta = workPositionRef.current - previousVisualPosition;
       const velocityBlend = clamp(VISUAL_VELOCITY_RESPONSE * frameScale, 0.12, 0.72);
@@ -2362,6 +2393,7 @@ export function HeroScrollVideoSection() {
 
       if (
         Math.abs(targetWorkPositionRef.current - workPositionRef.current) < TAO_SETTLE_EPSILON &&
+        Math.abs(smoothScrollImpulseRef.current) < TAO_SNAP_THRESHOLD &&
         Math.abs(scrollVelocityRef.current) < TAO_SNAP_THRESHOLD &&
         Math.abs(touchImpulseRef.current) < TAO_SNAP_THRESHOLD
       ) {
@@ -2373,7 +2405,7 @@ export function HeroScrollVideoSection() {
       const baseWorkIndex = Math.floor(wrapped);
       const nextWorkIndex = modulo(baseWorkIndex + 1, WORKS.length);
       const rawTransition = wrapped - baseWorkIndex;
-      const visualTransition = shapeSlideProgress(rawTransition, scrollDirectionRef.current);
+      const visualTransition = rawTransition;
       const activeWorkIndex = rawTransition < 0.5 ? baseWorkIndex : nextWorkIndex;
       const activeSlide = homeSlides[activeWorkIndex + 1] ?? homeSlides[1] ?? openingSlide;
       const transitionIsMoving =
@@ -2487,6 +2519,20 @@ export function HeroScrollVideoSection() {
       );
     };
 
+    const addSmoothWheelPulse = (amount: number) => {
+      if (isWorksActiveRef.current || isOpeningSceneRef.current) return;
+
+      const direction = Math.sign(amount);
+      if (direction === 0) return;
+
+      activeTweenRef.current?.kill();
+      lastScrollInputAtRef.current = performance.now();
+      scrollDirectionRef.current = direction < 0 ? -1 : 1;
+      smoothWheelDirectionRef.current = direction;
+      smoothWheelPulseUntilRef.current =
+        lastScrollInputAtRef.current + TAO_SMOOTH_WHEEL_MS;
+    };
+
     const addTouchImpulse = (delta: number) => {
       if (isWorksActiveRef.current || isOpeningSceneRef.current) return;
 
@@ -2506,7 +2552,14 @@ export function HeroScrollVideoSection() {
       if (isWorksActiveRef.current) return;
 
       event.preventDefault();
-      addScrollForce(event.deltaY);
+      const wheelAmount = normalizeWheelAmount(event);
+
+      if (!isOpeningSceneRef.current && shouldUseTaoSmoothWheelPath()) {
+        addSmoothWheelPulse(wheelAmount);
+        return;
+      }
+
+      addScrollForce(wheelAmount);
     };
 
     const onTouchStart = (event: TouchEvent) => {
@@ -2696,6 +2749,9 @@ export function HeroScrollVideoSection() {
       targetWorkPositionRef.current = targetPosition;
       workPositionRef.current = targetPosition;
       scrollVelocityRef.current = 0;
+      smoothScrollImpulseRef.current = 0;
+      smoothWheelDirectionRef.current = 0;
+      smoothWheelPulseUntilRef.current = 0;
       touchImpulseRef.current = 0;
       visualVelocityRef.current = 0;
       commitActiveScene(targetScene, true);
@@ -2707,6 +2763,9 @@ export function HeroScrollVideoSection() {
         ease: "sine.out",
         onStart: () => {
           scrollVelocityRef.current = 0;
+          smoothScrollImpulseRef.current = 0;
+          smoothWheelDirectionRef.current = 0;
+          smoothWheelPulseUntilRef.current = 0;
           touchImpulseRef.current = 0;
           lastScrollInputAtRef.current = performance.now();
         },

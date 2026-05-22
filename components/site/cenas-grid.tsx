@@ -863,7 +863,7 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
         return pointer;
       },
 
-      // ── TAO ControllerThreeListItemZoom ─────────────────────────────────
+      // ──  ControllerThreeListItemZoom ─────────────────────────────────
       zoomIn: (index, onComplete) => {
         const item = apiRef.current.items.get(index);
         if (!item) return false;
@@ -918,7 +918,7 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
           canvasRef.current.style.zIndex = "999";
         }
 
-        // TAO createRandomArray(4): random corner delay order
+        //  createRandomArray(4): random corner delay order
         item.zoomRandom = shuffled4();
         item.zoomFadeTargets = canvasRef.current?.parentElement
           ? Array.from(canvasRef.current.parentElement.children)
@@ -965,16 +965,16 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
           item.video.play().catch(() => {});
         }
 
-        // TAO: _progress1 0→0.5 in 1.2s CubicInOut, _progress2 0→0.5 in 1.5s QuadInOut
+        // : _progress1 0→0.5 in 1.2s CubicInOut, _progress2 0→0.5 in 1.5s QuadInOut
         const tl = gsap.timeline();
         item.zoomTween = tl;
 
         // Mesh expansion is driven in the vertex shader, corner by corner.
-        // TAO _progress1 + _progress2 drive sway + corners via _onUpdate
+        //  _progress1 + _progress2 drive sway + corners via _onUpdate
         tl.to(item.zoomProgress1, { value: 0.5, duration: 1.2, ease: "power3.inOut" }, 0);
         tl.to(item.zoomProgress2, { value: 0.5, duration: 1.5, ease: "power2.inOut" }, 0);
 
-        // TAO _zoomInComplete at delay 1.4s
+        //  _zoomInComplete at delay 1.4s
         tl.call(() => {
           item.isZooming = false;
           if (api.renderer && api.scene && api.camera) {
@@ -1211,12 +1211,15 @@ function CenaCard({
   // Per-item randoms — seeded once on mount, never change
   const zenoRef     = useRef(0);   // Tajima: Random.range(0.1, 0.15, 0.01)
   const entryDurRef = useRef(0);   // Tajima: 0.8 + Random.range(0, 0.4, 0.1)
+  const offsetScaleRef = useRef(1); // Tajima: 1 + Random.ranges(0, 0.2, 0.1)
 
   // Parallax state
   const addY     = useRef({ value: 300 });
   const currentY = useRef(0);
   const targetY  = useRef(0);
   const rafId    = useRef<number | null>(null);
+  const scrollFrameId = useRef<number | null>(null);
+  const hiddenRef = useRef(false);
 
   const tweenRef = useRef<gsap.core.Tween | null>(null);
 
@@ -1355,14 +1358,19 @@ function CenaCard({
   useEffect(() => {
     const card  = cardRef.current;
     if (!card) return;
+    const layoutHost = card.parentElement ?? card;
 
     // Seed per-item randoms
     zenoRef.current     = randRange(10, 15, 1) / 100;   // 0.10 – 0.15
     entryDurRef.current = 0.8 + randRange(0, 4, 1) / 10; // 0.8 – 1.2 s
+    offsetScaleRef.current = 1 + randRange(0, 2, 1) / 10; // 1.0 – 1.2
 
     const obj = addY.current;
     const entryOffset = entryMode === "manual" ? 400 : 300;
     obj.value = entryOffset;
+    hiddenRef.current = false;
+    card.style.visibility = "visible";
+    card.style.pointerEvents = "";
     gsap.set(card, { opacity: 1, y: entryOffset });
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1382,10 +1390,9 @@ function CenaCard({
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // 2. PARALLAX — per-frame zeno lerp (Tajima faithful)
-    //    targetY = (dist_from_viewport_center - dead_zone) × 0.25
-    //    each frame: currentY += (targetY - currentY) × zeno
-    //    stops when |delta| < 0.2  (Tajima exact threshold)
+    // 2. PARALLAX — layout-driven TAO scroll controller.
+    //    TAO measures the fixed list layout, hides offscreen items, and
+    //    re-enters from directional offsets before the zeno settle.
     // ─────────────────────────────────────────────────────────────────────
     const tick = () => {
       const delta = targetY.current - currentY.current;
@@ -1399,26 +1406,124 @@ function CenaCard({
       gsap.set(card, { y: currentY.current + addY.current.value });
     };
 
+    const setHidden = (hidden: boolean) => {
+      hiddenRef.current = hidden;
+      card.style.visibility = hidden ? "hidden" : "visible";
+      card.style.opacity = hidden ? "0" : "1";
+      card.style.pointerEvents = hidden ? "none" : "";
+    };
+
+    const getViewport = () => {
+      const scrollRoot = scrollRootRef?.current;
+
+      if (scrollRoot) {
+        const rect = scrollRoot.getBoundingClientRect();
+        return {
+          height: scrollRoot.clientHeight || window.innerHeight,
+          scrollY: scrollRoot.scrollTop,
+          top: rect.top
+        };
+      }
+
+      return {
+        height: window.innerHeight,
+        scrollY: window.scrollY,
+        top: 0
+      };
+    };
+
+    const getDirectionalOffset = (height: number) => {
+      const width = window.innerWidth;
+      const baseOffset = width < 768 ? 200 : width < 1024 ? 250 : 500;
+      const scaledOffset = baseOffset * offsetScaleRef.current;
+
+      return {
+        max: scaledOffset,
+        min: -scaledOffset,
+        seed: (height / 3) * 0.25
+      };
+    };
+
+    const stopTick = () => {
+      if (rafId.current === null) {
+        return;
+      }
+
+      cancelAnimationFrame(rafId.current);
+      rafId.current = null;
+    };
+
+    const updateScrollTarget = () => {
+      const viewport = getViewport();
+      const layoutRect = layoutHost.getBoundingClientRect();
+      const layoutTop = viewport.scrollY + layoutRect.top - viewport.top;
+      const height = layoutRect.height || card.offsetHeight;
+      const position = layoutTop - viewport.height / 2 + height / 2;
+      const min = layoutTop - viewport.height;
+      const max = layoutTop + height;
+      const offsets = getDirectionalOffset(viewport.height);
+      let distance = position - viewport.scrollY;
+
+      if (viewport.scrollY > max || viewport.scrollY < min) {
+        if (hiddenRef.current) {
+          return;
+        }
+
+        setHidden(true);
+        currentY.current = offsets.seed + (viewport.scrollY < min ? offsets.max : offsets.min);
+        targetY.current = currentY.current;
+        gsap.set(card, { y: currentY.current + addY.current.value });
+        stopTick();
+        return;
+      }
+
+      if (hiddenRef.current) {
+        setHidden(false);
+        currentY.current = offsets.seed + (distance > 0 ? offsets.max : offsets.min);
+        gsap.set(card, { y: currentY.current + addY.current.value });
+      }
+
+      const area = Math.max(viewport.height / 4, 100);
+
+      if (distance > 0) {
+        distance = distance < area ? 0 : distance - area;
+      } else if (distance < 0) {
+        distance = distance > -area ? 0 : distance + area;
+      }
+
+      targetY.current = distance * 0.25;
+
+      if (rafId.current === null) {
+        rafId.current = requestAnimationFrame(tick);
+      }
+    };
+
     const onScroll = () => {
-      const rect   = card.getBoundingClientRect();
-      const center = window.innerHeight / 2;
-      const area   = Math.max(window.innerHeight / 4, 100); // dead-zone
-      let t = center - (rect.top + rect.height / 2);        // + = above center
-      if      (t > 0) t = t < area ? 0 : t - area;
-      else if (t < 0) t = t > -area ? 0 : t + area;
-      targetY.current = t * 0.25; // Tajima h = 0.25
-      if (rafId.current === null) rafId.current = requestAnimationFrame(tick);
+      if (scrollFrameId.current !== null) {
+        return;
+      }
+
+      scrollFrameId.current = requestAnimationFrame(() => {
+        scrollFrameId.current = null;
+        updateScrollTarget();
+      });
     };
 
     const scrollRoot = scrollRootRef?.current;
     const scrollTarget: HTMLElement | Window = scrollRoot ?? window;
 
     scrollTarget.addEventListener("scroll", onScroll, { passive: true });
-    onScroll();
+    window.addEventListener("resize", onScroll);
+    updateScrollTarget();
 
     return () => {
       scrollTarget.removeEventListener("scroll", onScroll);
-      if (rafId.current !== null) cancelAnimationFrame(rafId.current);
+      window.removeEventListener("resize", onScroll);
+      stopTick();
+      if (scrollFrameId.current !== null) {
+        cancelAnimationFrame(scrollFrameId.current);
+        scrollFrameId.current = null;
+      }
       tweenRef.current?.kill();
     };
   }, [entryMode, scrollRootRef]);
@@ -1450,7 +1555,7 @@ function CenaCard({
   }, [entryKey, entryMode]);
 
   // ─────────────────────────────────────────────────────────────────────
-  // 3. HOVER — CSS approximation of Tajima's WebGL ±16px + scale 1.25
+  // 3. HOVER — CSS  WebGL ±16px + scale 1.25
   // ─────────────────────────────────────────────────────────────────────
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     if (isHoveringRef.current) {
@@ -1518,7 +1623,7 @@ function CenaCard({
         </span>
       </div>
 
-      {/* ── Thumbnail — landscape 16:9 (Tajima: .list_thumb) ─────────────────── */}
+      {/* ── Thumbnail — landscape 16:9  ─────────────────── */}
       <div
         ref={mediaRef}
         className="relative isolate overflow-visible bg-[#e8e6e3]"
@@ -1534,7 +1639,7 @@ function CenaCard({
         />
       </div>
 
-      {/* ── Title (Tajima: .list_title — light, ~14px, no italic) ──────────────── */}
+      {/* ── Title : .list_title — light, ~14px, no italic) ──────────────── */}
       <div className="mt-[6px] overflow-hidden">
         <span
           className={`block text-[18px] font-semibold leading-[1.18] tracking-[0.01em] text-[#171411] md:text-[19px] transition-transform duration-500 ease-[cubic-bezier(0.215,0.61,0.355,1)] ${isHovering ? "-translate-y-[120%] delay-0" : "delay-100"}`}
@@ -1582,16 +1687,16 @@ export function CenasGridSection({
   const router = useRouter();
   const isEmbedded = Boolean(onHomeClick);
 
-  // ── Tajima _layout(): JS absolute positioning ─────────────────────────────
+  // ─      (): JS absolute positioning ─────────────────────────────
   // 2 cols: h=[50,0], colGap=100px
   // 3 cols (≥1100px): h=[50,0,100], colGap=60px
-  // Per-item vertical gap: TAO measured first rows, then randRange(80,130,10)
+  // Per-item vertical gap:  measured first rows, then randRange(80,130,10)
   // Container height = Math.max(...h)
   useIsoLayoutEffect(() => {
     const list = listRef.current;
     if (!list) return;
 
-    // First rows pinned to TAO measurements; fallback stays in TAO's random range.
+    // First rows pinned to  measurements; fallback stays in random range.
     const tajimaMeasuredGaps = [130, 90, 90, 90, 110, 80];
     const gaps: number[] = WORKS.map((_, index) => tajimaMeasuredGaps[index] ?? randRange(80, 130, 10));
 
@@ -1621,7 +1726,7 @@ export function CenasGridSection({
     return () => window.removeEventListener("resize", layout);
   }, []);
 
-  // ── Tajima list_home parallax: top = 120 - scrollY ───────────────────────
+  // ──  list_home parallax: top = 120 - scrollY ───────────────────────
   // Header floats down on load, moves up and fades out as user scrolls
   useEffect(() => {
     const header = headerRef.current;
