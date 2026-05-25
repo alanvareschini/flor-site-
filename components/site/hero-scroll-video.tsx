@@ -6,6 +6,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type RefObject,
   useEffect,
+  useId,
   useRef,
   useState
 } from "react";
@@ -190,6 +191,56 @@ const worksThreeSlideTiming = {
   cardsMs: 760,
   completeMs: 1200
 } as const;
+
+const captionPalettes = [
+  ["#f49bc7", "#ffffff", "#ff5fa8", "#ffcfdf"],
+  ["#58b7ff", "#ffffff", "#4f7dff", "#b8f2ff"],
+  ["#6fa8ff", "#ffffff", "#7260ff", "#c6d8ff"],
+  ["#ff6d86", "#ffffff", "#c80f3b", "#ffd0dc"],
+  ["#b974ff", "#ffffff", "#ff68c8", "#ecd2ff"],
+  ["#aee4ff", "#ffffff", "#68b9ff", "#f6fbff"],
+  ["#ff4358", "#fff5f5", "#f51e47", "#ffc4cd"],
+  ["#ff8f13", "#fff4a8", "#ff4300", "#ffd84a"],
+  ["#bd86ff", "#ffffff", "#7952ff", "#ffd2ff"],
+  ["#ffc525", "#fff8a6", "#e19100", "#ffe866"],
+  ["#ffe0ea", "#ffffff", "#f1a7c3", "#fff2f6"],
+  ["#9469ff", "#ffffff", "#5f41ff", "#d6beff"],
+  ["#ffd21a", "#fff9b8", "#ff9f00", "#fff063"],
+  ["#86adff", "#ffffff", "#537bff", "#d6e3ff"],
+  ["#ff75d4", "#ffffff", "#b93cff", "#ffc6ef"],
+  ["#c878ff", "#ffffff", "#8d44ff", "#edd2ff"],
+  ["#9870ff", "#ffffff", "#5f3dff", "#d6c2ff"],
+  ["#ff4fb8", "#fff1fa", "#b52eff", "#ffbde3"],
+  ["#8f5cff", "#ffffff", "#6039c9", "#d0b8ff"],
+  ["#ff3030", "#fff1f1", "#b80024", "#ffb3b3"]
+];
+
+function getCaptionPalette(slide: HomeSlide) {
+  if (slide.kind !== "work") {
+    return ["#ffffff", "#ffd9e8", "#ff87bd", "#ffffff"];
+  }
+
+  const index = Math.max(0, WORKS.findIndex((work) => worksPath(work) === slide.path));
+  return captionPalettes[index] ?? ["#ffffff", "#e8f3ff", "#9ccfff", "#ffffff"];
+}
+
+function getCaptionFontSize(title: string) {
+  const length = title.length;
+
+  if (length > 18) return 64;
+  if (length > 15) return 72;
+  if (length > 12) return 86;
+  return 108;
+}
+
+function getCaptionLetterSpacing(title: string) {
+  const length = title.length;
+
+  if (length > 18) return "0.06em";
+  if (length > 15) return "0.1em";
+  if (length > 12) return "0.16em";
+  return "0.22em";
+}
 
 function heroFrameSrc(frame: number) {
   const clampedFrame = Math.max(1, Math.min(HERO_FRAME_COUNT, Math.round(frame)));
@@ -496,8 +547,38 @@ function WorksZoomTransition({
       };
     };
 
+    const getLayoutRectInScrollRoot = (root: HTMLElement, target: HTMLElement) => {
+      let left = 0;
+      let top = 0;
+      let node: HTMLElement | null = target;
+
+      while (node && node !== root) {
+        left += node.offsetLeft;
+        top += node.offsetTop;
+        node = node.offsetParent as HTMLElement | null;
+      }
+
+      if (!node) {
+        return target.getBoundingClientRect();
+      }
+
+      const rootRect = root.getBoundingClientRect();
+      return {
+        left: rootRect.left + left,
+        top: rootRect.top + top - root.scrollTop,
+        width: target.offsetWidth || target.getBoundingClientRect().width,
+        height: target.offsetHeight || target.getBoundingClientRect().height,
+        right: rootRect.left + left + (target.offsetWidth || target.getBoundingClientRect().width),
+        bottom:
+          rootRect.top +
+          top -
+          root.scrollTop +
+          (target.offsetHeight || target.getBoundingClientRect().height)
+      };
+    };
+
     const resolveTargetRect = async () => {
-      for (let attempt = 0; attempt < 12; attempt += 1) {
+      for (let attempt = 0; attempt < 90; attempt += 1) {
         const root = worksLayerRef.current;
         const target = root?.querySelector<HTMLElement>(
           `[data-work-media-index="${targetWorkIndex}"]`
@@ -505,7 +586,7 @@ function WorksZoomTransition({
 
         if (root && target) {
           const rootRect = root.getBoundingClientRect();
-          const initialRect = target.getBoundingClientRect();
+          const initialRect = getLayoutRectInScrollRoot(root, target);
           const desiredTop =
             root.scrollTop +
             initialRect.top -
@@ -516,7 +597,7 @@ function WorksZoomTransition({
 
           await new Promise((resolve) => requestAnimationFrame(resolve));
 
-          const rect = target.getBoundingClientRect();
+          const rect = getLayoutRectInScrollRoot(root, target);
 
           if (
             rect.width > 20 &&
@@ -535,7 +616,7 @@ function WorksZoomTransition({
       const target = root?.querySelector<HTMLElement>(
         `[data-work-media-index="${targetWorkIndex}"]`
       );
-      const rect = target?.getBoundingClientRect();
+      const rect = root && target ? getLayoutRectInScrollRoot(root, target) : target?.getBoundingClientRect();
 
       if (rect && rect.width > 20 && rect.height > 20) {
         return rect;
@@ -806,6 +887,7 @@ type SlideShaderRuntime = {
 };
 
 export function HeroScrollVideoSection() {
+  const captionFilterId = useId().replace(/:/g, "");
   const sectionRef = useRef<HTMLElement | null>(null);
   const frameRef = useRef<HTMLImageElement | null>(null);
   const currentVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -864,6 +946,9 @@ export function HeroScrollVideoSection() {
 
   const isWorksActive = isWorksView || isZoomingWorks;
   const currentScene = homeSlides[activeScene] ?? openingSlide;
+  const captionPalette = getCaptionPalette(currentScene);
+  const captionFontSize = getCaptionFontSize(currentScene.heading);
+  const captionLetterSpacing = getCaptionLetterSpacing(currentScene.heading);
   const firstVisibleScene = openingAvailable ? 0 : 1;
   const previousSceneIndex =
     activeScene <= firstVisibleScene ? homeSlides.length - 1 : activeScene - 1;
@@ -876,6 +961,10 @@ export function HeroScrollVideoSection() {
   const lineTone = isListView || isWorksActive ? "bg-[#171411]" : "bg-white/80";
 
   useEffect(() => routeManagerPlus.init(), []);
+
+  useEffect(() => {
+    void import("./cenas-grid");
+  }, []);
 
   useEffect(() => {
     isWorksActiveRef.current = isWorksActive;
@@ -2973,7 +3062,7 @@ export function HeroScrollVideoSection() {
               <div
                 key={currentScene.id}
                 className={clsx(
-                  "max-w-[760px] text-center transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                  "w-[min(92vw,1120px)] max-w-none text-center transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]",
                   !isListView && !isWorksActive && "tao-slide-text",
                   isListView || isWorksActive
                     ? "translate-y-8 scale-[0.98] opacity-0"
@@ -2989,8 +3078,95 @@ export function HeroScrollVideoSection() {
                 >
                   {currentScene.kicker}
                 </p>
-                <h1 className="mt-5 text-[2.65rem] font-light uppercase tracking-[0.34em] md:text-[5.4rem] md:tracking-[0.24em]">
-                  {currentScene.heading}
+                <h1 className="flor-video-caption-heading mt-5" aria-label={currentScene.heading}>
+                  <span className="sr-only">{currentScene.heading}</span>
+                  <svg
+                    aria-hidden="true"
+                    className="flor-video-caption-svg"
+                    viewBox="-220 0 1640 160"
+                    preserveAspectRatio="xMidYMid meet"
+                  >
+                    <defs>
+                      <filter
+                        id={`${captionFilterId}-caption-outline`}
+                        x="-25%"
+                        y="-35%"
+                        width="150%"
+                        height="170%"
+                        colorInterpolationFilters="sRGB"
+                      >
+                        <feMorphology
+                          in="SourceAlpha"
+                          operator="dilate"
+                          radius="2.65"
+                          result="expanded"
+                        />
+                        <feMorphology
+                          in="SourceAlpha"
+                          operator="erode"
+                          radius="0"
+                          result="contracted"
+                        />
+                        <feComposite
+                          in="expanded"
+                          in2="contracted"
+                          operator="out"
+                          result="outline"
+                        />
+                        <feFlood
+                          floodColor="rgba(255,255,255,0.74)"
+                          result="outlineColor"
+                        />
+                        <feComposite in="outlineColor" in2="outline" operator="in" />
+                      </filter>
+                      <mask
+                        id={`${captionFilterId}-caption-mask`}
+                        maskUnits="userSpaceOnUse"
+                        x="-220"
+                        y="0"
+                        width="1640"
+                        height="160"
+                      >
+                        <rect x="-220" y="0" width="1640" height="160" fill="black" />
+                        <text
+                          filter={`url(#${captionFilterId}-caption-outline)`}
+                          x="600"
+                          y="96"
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          fill="white"
+                          fontSize={captionFontSize}
+                          letterSpacing={captionLetterSpacing}
+                        >
+                          {currentScene.heading}
+                        </text>
+                      </mask>
+                      <linearGradient
+                        id={`${captionFilterId}-caption-gradient`}
+                        gradientUnits="userSpaceOnUse"
+                        x1="-220"
+                        y1="0"
+                        x2="1420"
+                        y2="0"
+                      >
+                        <stop offset="0%" stopColor={captionPalette[0]} stopOpacity="0.22" />
+                        <stop offset="18%" stopColor={captionPalette[1]} stopOpacity="0.95" />
+                        <stop offset="38%" stopColor={captionPalette[2]} stopOpacity="1" />
+                        <stop offset="58%" stopColor={captionPalette[3]} stopOpacity="0.96" />
+                        <stop offset="78%" stopColor={captionPalette[0]} stopOpacity="0.92" />
+                        <stop offset="100%" stopColor={captionPalette[1]} stopOpacity="0.34" />
+                      </linearGradient>
+                    </defs>
+                    <rect
+                      className="flor-video-caption-gradient"
+                      x="-220"
+                      y="0"
+                      width="1640"
+                      height="160"
+                      fill={`url(#${captionFilterId}-caption-gradient)`}
+                      mask={`url(#${captionFilterId}-caption-mask)`}
+                    />
+                  </svg>
                 </h1>
                 <p
                   className={clsx(
