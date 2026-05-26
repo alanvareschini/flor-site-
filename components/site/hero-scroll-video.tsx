@@ -2,6 +2,7 @@
 
 import clsx from "clsx";
 import {
+  type CSSProperties,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type RefObject,
@@ -224,22 +225,23 @@ function getCaptionPalette(slide: HomeSlide) {
   return captionPalettes[index] ?? ["#ffffff", "#e8f3ff", "#9ccfff", "#ffffff"];
 }
 
-function getCaptionFontSize(title: string) {
-  const length = title.length;
-
-  if (length > 18) return 64;
-  if (length > 15) return 72;
-  if (length > 12) return 86;
-  return 108;
+function getCaptionFontSize(_title: string) {
+  return 124;
 }
 
-function getCaptionLetterSpacing(title: string) {
-  const length = title.length;
+function getCaptionLetterSpacing(_title: string) {
+  return "0.045em";
+}
 
-  if (length > 18) return "0.06em";
-  if (length > 15) return "0.1em";
-  if (length > 12) return "0.16em";
-  return "0.22em";
+function getCaptionGradientStyle(slide: HomeSlide): CSSProperties {
+  const palette = getCaptionPalette(slide);
+
+  return {
+    "--caption-c1": palette[0],
+    "--caption-c2": palette[1],
+    "--caption-c3": palette[2],
+    "--caption-c4": palette[3]
+  } as CSSProperties;
 }
 
 function heroFrameSrc(frame: number) {
@@ -3083,89 +3085,77 @@ export function HeroScrollVideoSection() {
                   <svg
                     aria-hidden="true"
                     className="flor-video-caption-svg"
-                    viewBox="-220 0 1640 160"
+                    viewBox="-280 -24 1760 208"
                     preserveAspectRatio="xMidYMid meet"
                   >
                     <defs>
                       <filter
-                        id={`${captionFilterId}-caption-outline`}
-                        x="-25%"
+                        id={`${captionFilterId}-caption-soft-glow`}
+                        x="-18%"
                         y="-35%"
-                        width="150%"
+                        width="136%"
                         height="170%"
                         colorInterpolationFilters="sRGB"
                       >
-                        <feMorphology
-                          in="SourceAlpha"
-                          operator="dilate"
-                          radius="2.65"
-                          result="expanded"
-                        />
-                        <feMorphology
-                          in="SourceAlpha"
-                          operator="erode"
-                          radius="0"
-                          result="contracted"
-                        />
-                        <feComposite
-                          in="expanded"
-                          in2="contracted"
-                          operator="out"
-                          result="outline"
-                        />
-                        <feFlood
-                          floodColor="rgba(255,255,255,0.74)"
-                          result="outlineColor"
-                        />
-                        <feComposite in="outlineColor" in2="outline" operator="in" />
+                        <feGaussianBlur stdDeviation="3.5" result="glowA" />
+                        <feGaussianBlur stdDeviation="9" result="glowB" />
+                        <feMerge>
+                          <feMergeNode in="glowB" />
+                          <feMergeNode in="glowA" />
+                          <feMergeNode in="SourceGraphic" />
+                        </feMerge>
                       </filter>
-                      <mask
-                        id={`${captionFilterId}-caption-mask`}
-                        maskUnits="userSpaceOnUse"
-                        x="-220"
-                        y="0"
-                        width="1640"
-                        height="160"
-                      >
-                        <rect x="-220" y="0" width="1640" height="160" fill="black" />
-                        <text
-                          filter={`url(#${captionFilterId}-caption-outline)`}
-                          x="600"
-                          y="96"
-                          textAnchor="middle"
-                          dominantBaseline="middle"
-                          fill="white"
-                          fontSize={captionFontSize}
-                          letterSpacing={captionLetterSpacing}
-                        >
-                          {currentScene.heading}
-                        </text>
-                      </mask>
                       <linearGradient
                         id={`${captionFilterId}-caption-gradient`}
                         gradientUnits="userSpaceOnUse"
-                        x1="-220"
+                        x1="-280"
                         y1="0"
-                        x2="1420"
+                        x2="1480"
                         y2="0"
                       >
-                        <stop offset="0%" stopColor={captionPalette[0]} stopOpacity="0.22" />
-                        <stop offset="18%" stopColor={captionPalette[1]} stopOpacity="0.95" />
-                        <stop offset="38%" stopColor={captionPalette[2]} stopOpacity="1" />
-                        <stop offset="58%" stopColor={captionPalette[3]} stopOpacity="0.96" />
-                        <stop offset="78%" stopColor={captionPalette[0]} stopOpacity="0.92" />
-                        <stop offset="100%" stopColor={captionPalette[1]} stopOpacity="0.34" />
+                        <stop offset="0%" stopColor={captionPalette[0]} stopOpacity="0.92" />
+                        <stop offset="16%" stopColor={captionPalette[1]} stopOpacity="1" />
+                        <stop offset="34%" stopColor={captionPalette[2]} stopOpacity="1" />
+                        <stop offset="52%" stopColor={captionPalette[3]} stopOpacity="1" />
+                        <stop offset="70%" stopColor={captionPalette[0]} stopOpacity="1" />
+                        <stop offset="86%" stopColor={captionPalette[2]} stopOpacity="1" />
+                        <stop offset="100%" stopColor={captionPalette[1]} stopOpacity="0.92" />
+                        <animateTransform
+                          attributeName="gradientTransform"
+                          type="translate"
+                          values="-720 0; 720 0; -720 0"
+                          dur="3.6s"
+                          repeatCount="indefinite"
+                        />
                       </linearGradient>
                     </defs>
-                    <rect
-                      className="flor-video-caption-gradient"
-                      x="-220"
-                      y="0"
-                      width="1640"
-                      height="160"
-                      fill={`url(#${captionFilterId}-caption-gradient)`}
-                      mask={`url(#${captionFilterId}-caption-mask)`}
-                    />
+                    <text
+                      className="flor-video-caption-line flor-video-caption-line-glow"
+                      x="600"
+                      y="88"
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fontSize={captionFontSize}
+                      letterSpacing={captionLetterSpacing}
+                      fill="none"
+                      stroke={`url(#${captionFilterId}-caption-gradient)`}
+                      filter={`url(#${captionFilterId}-caption-soft-glow)`}
+                    >
+                      {currentScene.heading}
+                    </text>
+                    <text
+                      className="flor-video-caption-line flor-video-caption-line-main"
+                      x="600"
+                      y="88"
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fontSize={captionFontSize}
+                      letterSpacing={captionLetterSpacing}
+                      fill="none"
+                      stroke={`url(#${captionFilterId}-caption-gradient)`}
+                    >
+                      {currentScene.heading}
+                    </text>
                   </svg>
                 </h1>
                 <p
@@ -3202,7 +3192,10 @@ export function HeroScrollVideoSection() {
                   <p className="font-mono text-[13px] tracking-[0.16em] text-white/52 md:text-[14px]">
                     #{previousScene.id}
                   </p>
-                  <p className="mt-1 text-[0.95rem] font-semibold italic tracking-[0.05em] text-white/95 md:text-[1.6rem]">
+                  <p
+                    className="flor-bottom-caption-gradient mt-1 text-[0.95rem] font-semibold italic tracking-[0.05em] text-white/95 md:text-[1.6rem]"
+                    style={getCaptionGradientStyle(previousScene)}
+                  >
                     {previousScene.title}
                   </p>
                 </button>
@@ -3224,7 +3217,10 @@ export function HeroScrollVideoSection() {
                   <p className="font-mono text-[13px] tracking-[0.16em] text-white/92 md:text-[14px]">
                     #{nextScene.id}
                   </p>
-                  <p className="mt-1 text-[0.95rem] font-semibold italic tracking-[0.05em] text-white md:text-[1.6rem]">
+                  <p
+                    className="flor-bottom-caption-gradient mt-1 text-[0.95rem] font-semibold italic tracking-[0.05em] text-white md:text-[1.6rem]"
+                    style={getCaptionGradientStyle(nextScene)}
+                  >
                     {nextScene.title}
                   </p>
                 </button>

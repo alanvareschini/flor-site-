@@ -226,50 +226,93 @@ body.is-loading {
 
 .flor-video-caption-heading {
   position: relative;
+  isolation: isolate;
   width: min(92vw, 1120px);
-  height: clamp(5rem, 13vw, 10.4rem);
+  height: clamp(5.6rem, 13vw, 10.8rem);
   margin-left: auto;
   margin-right: auto;
 }
 
+.flor-video-caption-heading::before {
+  content: "";
+  position: absolute;
+  inset: 14% -4% 10%;
+  z-index: -1;
+  border-radius: 999px;
+  background:
+    radial-gradient(ellipse at center, rgba(5, 6, 10, 0.24) 0%, rgba(5, 6, 10, 0.12) 46%, transparent 74%);
+  opacity: 0.82;
+  pointer-events: none;
+}
+
 .flor-video-caption-svg {
+  position: relative;
+  z-index: 1;
   display: block;
   width: 100%;
   height: 100%;
   overflow: visible;
+  pointer-events: none;
 }
 
-.flor-video-caption-svg text {
+.flor-video-caption-line {
   font-family: var(--font-outfit), sans-serif;
-  font-size: 106px;
-  font-weight: 500;
+  font-weight: 430;
   text-transform: uppercase;
-  fill: rgba(255, 255, 255, 1);
-  stroke: none;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-miterlimit: 1;
+  vector-effect: non-scaling-stroke;
+  text-rendering: geometricPrecision;
 }
 
-.flor-video-caption-gradient {
+.flor-video-caption-line-glow {
+  stroke-width: 3.4px;
+  opacity: 0.72;
+}
+
+.flor-video-caption-line-main {
+  stroke-width: 1.22px;
   opacity: 1;
-  filter:
-    drop-shadow(0 0 1px rgba(0, 0, 0, 0.62))
-    drop-shadow(0 0 4px rgba(0, 0, 0, 0.34))
-    drop-shadow(0 0 7px rgba(255, 255, 255, 0.28));
 }
 
-.flor-video-caption-heading::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: -0.22em;
-  width: min(8.5rem, 28%);
-  height: 1px;
-  transform: translateX(-50%);
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.18),
-    transparent
+.flor-bottom-caption-gradient {
+  --caption-c1: #f49bc7;
+  --caption-c2: #ffffff;
+  --caption-c3: #ff5fa8;
+  --caption-c4: #ffcfdf;
+  color: transparent;
+  background-image: linear-gradient(
+    100deg,
+    var(--caption-c1) 0%,
+    var(--caption-c2) 18%,
+    var(--caption-c3) 38%,
+    var(--caption-c4) 56%,
+    var(--caption-c1) 74%,
+    var(--caption-c3) 100%
   );
+  background-size: 260% 100%;
+  background-position: 0% 50%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: flor-bottom-caption-flow 3.6s linear infinite alternate;
+}
+
+@keyframes flor-bottom-caption-flow {
+  from {
+    background-position: 0% 50%;
+  }
+
+  to {
+    background-position: 100% 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flor-bottom-caption-gradient {
+    animation: none;
+  }
 }
 
 .menuTrigger {

@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
-import { Geist_Mono, Outfit, Geist } from "next/font/google";
+import { Geist_Mono, Megrim, Outfit, Geist } from "next/font/google";
 import "./globals.css";
 import { SakuraLoader } from "@/components/site/sakura-loader";
-import { FlowerCursorTrail } from "@/components/site/flower-cursor";
 import { cn } from "@/lib/utils";
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
@@ -10,6 +9,12 @@ const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 const outfit = Outfit({
   subsets: ["latin"],
   variable: "--font-outfit"
+});
+
+const megrim = Megrim({
+  subsets: ["latin"],
+  weight: "400",
+  variable: "--font-caption-line"
 });
 
 const   geistMono = Geist_Mono({
@@ -48,10 +53,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="pt-BR" data-scroll-behavior="smooth" className={cn(outfit.variable, geistMono.variable, "font-sans", geist.variable)}>
+    <html lang="pt-BR" data-scroll-behavior="smooth" className={cn(outfit.variable, megrim.variable, geistMono.variable, "font-sans", geist.variable)}>
       <body suppressHydrationWarning>
         <SakuraLoader />
-        <FlowerCursorTrail />
         {children}
       </body>
     </html>
