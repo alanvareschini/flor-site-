@@ -36,6 +36,11 @@ type HomeSlide = {
   previewFrame: number;
 };
 
+type CaptionPair = {
+  from: number;
+  to: number;
+};
+
 const HERO_FRAME_COUNT = 689;
 const INTRO_SCROLL_UNITS = 7.6;
 const WORK_SCROLL_UNITS = 0.9;
@@ -59,6 +64,17 @@ const TAO_SNAP_THRESHOLD = TAO_MAX_SCROLL_IMPULSE * 0.25;
 const TAO_SNAP_FORCE = 0.035;
 const TAO_SETTLE_EPSILON = 0.001;
 const SCROLL_SNAP_IDLE_MS = 110;
+const CAPTION_REVEAL_IDLE_MS = 45;
+const CAPTION_PROGRESS_EPSILON = 0.11;
+const CAPTION_VELOCITY_EPSILON = 0.012;
+const CAPTION_CHANGE_SUPPRESS_MS = 55;
+const CAPTION_FAST_PASS_SUPPRESS_MS = 95;
+const CAPTION_OUT_START = 0.02;
+const CAPTION_OUT_END = 0.48;
+const CAPTION_IN_START = 0.12;
+const CAPTION_IN_END = 0.76;
+const CAPTION_FAST_FADE_START = 0.01;
+const CAPTION_FAST_FADE_END = 0.034;
 const VISUAL_PROGRESS_RESPONSE_MIN = 0.32;
 const VISUAL_PROGRESS_RESPONSE_MAX = 0.68;
 const VISUAL_VELOCITY_RESPONSE = 0.24;
@@ -896,7 +912,10 @@ export function HeroScrollVideoSection() {
   const incomingVideoRef = useRef<HTMLVideoElement | null>(null);
   const posterOverlayRef = useRef<HTMLImageElement | null>(null);
   const transitionCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const captionLayerRef = useRef<HTMLDivElement | null>(null);
   const currentVideoSrcRef = useRef("");
+  const settledVideoRevealSrcRef = useRef("");
+  const settledVideoRevealCompleteSrcRef = useRef("");
   const activeSceneRef = useRef(0);
   const returnSceneRef = useRef(0);
   const worksLayerRef = useRef<HTMLDivElement | null>(null);
@@ -933,8 +952,13 @@ export function HeroScrollVideoSection() {
   const posterTextureCacheRef = useRef<Map<string, PosterTextureCacheEntry>>(new Map());
   const isWorksActiveRef = useRef(false);
   const isZoomingWorksRef = useRef(false);
+  const captionsVisibleRef = useRef(true);
+  const captionSuppressedUntilRef = useRef(0);
+  const captionPairRef = useRef<CaptionPair>({ from: 0, to: 1 });
 
   const [activeScene, setActiveScene] = useState(0);
+  const [captionPair, setCaptionPair] = useState<CaptionPair>({ from: 0, to: 1 });
+  const [captionsVisible, setCaptionsVisible] = useState(true);
   const [openingAvailable, setOpeningAvailable] = useState(true);
   const [isListView, setIsListView] = useState(false);
   const [isWorksView, setIsWorksView] = useState(false);
@@ -948,9 +972,6 @@ export function HeroScrollVideoSection() {
 
   const isWorksActive = isWorksView || isZoomingWorks;
   const currentScene = homeSlides[activeScene] ?? openingSlide;
-  const captionPalette = getCaptionPalette(currentScene);
-  const captionFontSize = getCaptionFontSize(currentScene.heading);
-  const captionLetterSpacing = getCaptionLetterSpacing(currentScene.heading);
   const firstVisibleScene = openingAvailable ? 0 : 1;
   const previousSceneIndex =
     activeScene <= firstVisibleScene ? homeSlides.length - 1 : activeScene - 1;
@@ -961,6 +982,145 @@ export function HeroScrollVideoSection() {
   const visibleSceneTotal = homeSlides.length - firstVisibleScene;
   const chromeTone = isListView || isWorksActive ? "text-[#171411]" : "text-white/88";
   const lineTone = isListView || isWorksActive ? "bg-[#171411]" : "bg-white/80";
+
+  const setCaptionVisibility = (visible: boolean) => {
+    if (captionsVisibleRef.current === visible) return;
+
+    captionsVisibleRef.current = visible;
+    setCaptionsVisible(visible);
+  };
+
+  const hideSceneCaptions = () => {
+    setCaptionVisibility(false);
+  };
+
+  const suppressSceneCaptions = (duration = CAPTION_CHANGE_SUPPRESS_MS) => {
+    captionSuppressedUntilRef.current = Math.max(
+      captionSuppressedUntilRef.current,
+      performance.now() + duration
+    );
+    hideSceneCaptions();
+  };
+
+  const setCaptionPairForProgress = (from: number, to: number) => {
+    const nextPair = { from, to };
+    const currentPair = captionPairRef.current;
+
+    if (currentPair.from === nextPair.from && currentPair.to === nextPair.to) return;
+
+    captionPairRef.current = nextPair;
+    setCaptionPair(nextPair);
+  };
+
+  const renderCaptionScene = (scene: HomeSlide, slot: "from" | "to") => {
+    const slotPalette = getCaptionPalette(scene);
+    const slotGradientId = `${captionFilterId}-${slot}-caption-gradient`;
+    const slotGlowId = `${captionFilterId}-${slot}-caption-soft-glow`;
+    const slotFontSize = getCaptionFontSize(scene.heading);
+    const slotLetterSpacing = getCaptionLetterSpacing(scene.heading);
+
+    return (
+      <div className={`flor-caption-sync-panel flor-caption-sync-${slot}`}>
+        <p
+          className={clsx(
+            "flor-caption-sync-piece flor-caption-sync-kicker font-mono text-[11px] uppercase tracking-[0.48em] md:text-xs",
+            isListView || isWorksActive ? "text-[#171411]/62" : "text-white/70"
+          )}
+        >
+          {scene.kicker}
+        </p>
+        <h1
+          className="flor-caption-sync-piece flor-caption-sync-heading flor-video-caption-heading mt-5"
+          aria-label={scene.heading}
+        >
+          <span className="sr-only">{scene.heading}</span>
+          <svg
+            aria-hidden="true"
+            className="flor-video-caption-svg"
+            viewBox="-280 -24 1760 208"
+            preserveAspectRatio="xMidYMid meet"
+          >
+            <defs>
+              <filter
+                id={slotGlowId}
+                x="-18%"
+                y="-35%"
+                width="136%"
+                height="170%"
+                colorInterpolationFilters="sRGB"
+              >
+                <feGaussianBlur stdDeviation="3.5" result="glowA" />
+                <feGaussianBlur stdDeviation="9" result="glowB" />
+                <feMerge>
+                  <feMergeNode in="glowB" />
+                  <feMergeNode in="glowA" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+              <linearGradient
+                id={slotGradientId}
+                gradientUnits="userSpaceOnUse"
+                x1="-280"
+                y1="0"
+                x2="1480"
+                y2="0"
+              >
+                <stop offset="0%" stopColor={slotPalette[0]} stopOpacity="0.92" />
+                <stop offset="16%" stopColor={slotPalette[1]} stopOpacity="1" />
+                <stop offset="34%" stopColor={slotPalette[2]} stopOpacity="1" />
+                <stop offset="52%" stopColor={slotPalette[3]} stopOpacity="1" />
+                <stop offset="70%" stopColor={slotPalette[0]} stopOpacity="1" />
+                <stop offset="86%" stopColor={slotPalette[2]} stopOpacity="1" />
+                <stop offset="100%" stopColor={slotPalette[1]} stopOpacity="0.92" />
+                <animateTransform
+                  attributeName="gradientTransform"
+                  type="translate"
+                  values="-720 0; 720 0; -720 0"
+                  dur="3.6s"
+                  repeatCount="indefinite"
+                />
+              </linearGradient>
+            </defs>
+            <text
+              className="flor-video-caption-line flor-video-caption-line-glow"
+              x="600"
+              y="88"
+              textAnchor="middle"
+              dominantBaseline="middle"
+              fontSize={slotFontSize}
+              letterSpacing={slotLetterSpacing}
+              fill="none"
+              stroke={`url(#${slotGradientId})`}
+              filter={`url(#${slotGlowId})`}
+            >
+              {scene.heading}
+            </text>
+            <text
+              className="flor-video-caption-line flor-video-caption-line-main"
+              x="600"
+              y="88"
+              textAnchor="middle"
+              dominantBaseline="middle"
+              fontSize={slotFontSize}
+              letterSpacing={slotLetterSpacing}
+              fill="none"
+              stroke={`url(#${slotGradientId})`}
+            >
+              {scene.heading}
+            </text>
+          </svg>
+        </h1>
+        <p
+          className={clsx(
+            "flor-caption-sync-piece flor-caption-sync-title mt-4 text-sm uppercase tracking-[0.4em] md:text-[13px]",
+            isListView || isWorksActive ? "text-[#171411]/58" : "text-white/70"
+          )}
+        >
+          {scene.title}
+        </p>
+      </div>
+    );
+  };
 
   useEffect(() => routeManagerPlus.init(), []);
 
@@ -2085,6 +2245,7 @@ export function HeroScrollVideoSection() {
   const commitActiveScene = (sceneIndex: number, immediateRoute = false) => {
     if (activeSceneRef.current === sceneIndex) return;
 
+    suppressSceneCaptions(CAPTION_CHANGE_SUPPRESS_MS);
     activeSceneRef.current = sceneIndex;
     setActiveScene(sceneIndex);
 
@@ -2358,6 +2519,7 @@ export function HeroScrollVideoSection() {
     const finishOpening = () => {
       if (!isOpeningSceneRef.current) return;
 
+      hideSceneCaptions();
       isOpeningSceneRef.current = false;
       openingAvailableRef.current = false;
       setOpeningAvailable(false);
@@ -2379,6 +2541,9 @@ export function HeroScrollVideoSection() {
       openingVelocityRef.current *= Math.pow(OPENING_VELOCITY_DECAY, frameScale);
 
       const progress = clamp(openingProgressRef.current, 0, 1);
+      if (progress > 0.035) {
+        hideSceneCaptions();
+      }
       setFrame(1 + smoothStep(0, 0.88, progress) * (HERO_FRAME_COUNT - 1));
       gsap.set(frame, {
         opacity: 1,
@@ -2496,6 +2661,8 @@ export function HeroScrollVideoSection() {
       const baseWorkIndex = Math.floor(wrapped);
       const nextWorkIndex = modulo(baseWorkIndex + 1, WORKS.length);
       const rawTransition = wrapped - baseWorkIndex;
+      const nearestWorkIndex = modulo(Math.round(wrapped), WORKS.length);
+      const distanceToNearestSlide = Math.min(rawTransition, 1 - rawTransition);
       const visualTransition = rawTransition;
       const activeWorkIndex = rawTransition < 0.5 ? baseWorkIndex : nextWorkIndex;
       const activeSlide = homeSlides[activeWorkIndex + 1] ?? homeSlides[1] ?? openingSlide;
@@ -2505,6 +2672,55 @@ export function HeroScrollVideoSection() {
         Math.abs(visualDelta) > 0.00005 ||
         Math.abs(scrollVelocityRef.current) > TAO_SNAP_THRESHOLD ||
         Math.abs(touchImpulseRef.current) > TAO_SNAP_THRESHOLD;
+      setCaptionPairForProgress(baseWorkIndex + 1, nextWorkIndex + 1);
+      const captionLayer = captionLayerRef.current;
+      const captionSpeed =
+        1 -
+        smoothStep(
+          CAPTION_FAST_FADE_START,
+          CAPTION_FAST_FADE_END,
+          Math.abs(visualVelocityRef.current)
+        );
+      if (captionLayer) {
+        const outProgress = smoothStep(CAPTION_OUT_START, CAPTION_OUT_END, rawTransition);
+        const inProgress = smoothStep(CAPTION_IN_START, CAPTION_IN_END, rawTransition);
+        const outFast = smoothStep(0.01, 0.36, rawTransition);
+        const inFast = smoothStep(0.08, 0.58, rawTransition);
+        const direction = scrollDirectionRef.current < 0 ? -1 : 1;
+        const fromOpacity = (1 - outProgress) * captionSpeed;
+        const toOpacity = inProgress * captionSpeed;
+        const fromSubOpacity = (1 - outFast) * captionSpeed;
+        const toSubOpacity = inFast * captionSpeed;
+        const fromX = direction * outProgress * -18;
+        const fromY = outProgress * -26;
+        const toX = direction * (1 - inProgress) * 16;
+        const toY = (1 - inProgress) * 30;
+        const fromReveal = 100 - outProgress * 100;
+        const toReveal = inProgress * 100;
+
+        captionLayer.style.setProperty("--caption-out", outProgress.toFixed(4));
+        captionLayer.style.setProperty("--caption-in", inProgress.toFixed(4));
+        captionLayer.style.setProperty("--caption-out-fast", outFast.toFixed(4));
+        captionLayer.style.setProperty("--caption-in-fast", inFast.toFixed(4));
+        captionLayer.style.setProperty("--caption-speed", captionSpeed.toFixed(4));
+        captionLayer.style.setProperty("--caption-direction", String(direction));
+        captionLayer.style.setProperty("--caption-out-clip", `${(outProgress * 100).toFixed(2)}%`);
+        captionLayer.style.setProperty("--caption-in-clip", `${((1 - inProgress) * 100).toFixed(2)}%`);
+        captionLayer.style.setProperty("--caption-from-reveal", `${fromReveal.toFixed(2)}%`);
+        captionLayer.style.setProperty("--caption-to-reveal", `${toReveal.toFixed(2)}%`);
+        captionLayer.style.setProperty("--caption-from-opacity", fromOpacity.toFixed(4));
+        captionLayer.style.setProperty("--caption-to-opacity", toOpacity.toFixed(4));
+        captionLayer.style.setProperty("--caption-from-sub-opacity", fromSubOpacity.toFixed(4));
+        captionLayer.style.setProperty("--caption-to-sub-opacity", toSubOpacity.toFixed(4));
+        captionLayer.style.setProperty("--caption-from-x", `${fromX.toFixed(2)}px`);
+        captionLayer.style.setProperty("--caption-from-y", `${fromY.toFixed(2)}px`);
+        captionLayer.style.setProperty("--caption-to-x", `${toX.toFixed(2)}px`);
+        captionLayer.style.setProperty("--caption-to-y", `${toY.toFixed(2)}px`);
+        captionLayer.style.setProperty("--caption-from-scale", (1 - outProgress * 0.018).toFixed(4));
+        captionLayer.style.setProperty("--caption-to-scale", (0.986 + inProgress * 0.014).toFixed(4));
+        captionLayer.style.setProperty("--caption-from-blur", `${(outProgress * 8).toFixed(2)}px`);
+        captionLayer.style.setProperty("--caption-to-blur", `${((1 - inProgress) * 9).toFixed(2)}px`);
+      }
       requestSlidePreviewRange(activeWorkIndex);
       syncSlidePreviewPlayback(
         baseWorkIndex,
@@ -2540,9 +2756,32 @@ export function HeroScrollVideoSection() {
 
           if (isShowingSettledVideo) {
             showHeroVideoLayer(currentVideo);
-            setLoopOpacity(currentVideo, 1);
+            if (settledVideoRevealSrcRef.current !== activeSlide.src) {
+              settledVideoRevealSrcRef.current = activeSlide.src;
+              settledVideoRevealCompleteSrcRef.current = "";
+              gsap.killTweensOf(currentVideo);
+              gsap.set(currentVideo, {
+                opacity: 0,
+                scale: 1,
+                filter: "blur(2px)",
+                clipPath: "inset(0%)",
+                willChange: "opacity, filter"
+              });
+              gsap.to(currentVideo, {
+                opacity: 1,
+                filter: "blur(0px)",
+                duration: 0.34,
+                ease: "power2.out",
+                onComplete: () => {
+                  currentVideo.style.willChange = "auto";
+                  settledVideoRevealCompleteSrcRef.current = activeSlide.src;
+                  setLoopOpacity(canvas, 0);
+                }
+              });
+            } else if (settledVideoRevealCompleteSrcRef.current === activeSlide.src) {
+              setLoopOpacity(canvas, 0);
+            }
             pauseSlidePreviewPlayback();
-            setLoopOpacity(canvas, 0);
             const runtime = slideShaderRef.current;
             if (
               runtime &&
@@ -2555,6 +2794,8 @@ export function HeroScrollVideoSection() {
         }
 
         if (!isShowingSettledVideo) {
+          settledVideoRevealSrcRef.current = "";
+          settledVideoRevealCompleteSrcRef.current = "";
           hideHeroVideoLayer(currentVideo);
           if (!settledOnWork) {
             currentVideo?.pause();
@@ -2568,6 +2809,19 @@ export function HeroScrollVideoSection() {
 
       if (activeSceneRef.current !== activeWorkIndex + 1) {
         commitActiveScene(activeWorkIndex + 1);
+      }
+
+      const captionsCanReveal =
+        !transitionIsMoving &&
+        distanceToNearestSlide < CAPTION_PROGRESS_EPSILON &&
+        Math.abs(visualVelocityRef.current) < CAPTION_VELOCITY_EPSILON &&
+        now - lastScrollInputAtRef.current > CAPTION_REVEAL_IDLE_MS &&
+        now >= captionSuppressedUntilRef.current;
+
+      if (captionsCanReveal) {
+        setCaptionVisibility(true);
+      } else {
+        hideSceneCaptions();
       }
     };
 
@@ -2589,6 +2843,7 @@ export function HeroScrollVideoSection() {
     const addScrollForce = (amount: number) => {
       if (isWorksActiveRef.current) return;
 
+      suppressSceneCaptions(CAPTION_FAST_PASS_SUPPRESS_MS);
       if (isOpeningSceneRef.current) {
         openingVelocityRef.current = clamp(
           openingVelocityRef.current + amount * WHEEL_FORCE * 1.65,
@@ -2617,6 +2872,7 @@ export function HeroScrollVideoSection() {
       if (direction === 0) return;
 
       activeTweenRef.current?.kill();
+      suppressSceneCaptions(CAPTION_FAST_PASS_SUPPRESS_MS);
       lastScrollInputAtRef.current = performance.now();
       scrollDirectionRef.current = direction < 0 ? -1 : 1;
       smoothWheelDirectionRef.current = direction;
@@ -2628,6 +2884,7 @@ export function HeroScrollVideoSection() {
       if (isWorksActiveRef.current || isOpeningSceneRef.current) return;
 
       activeTweenRef.current?.kill();
+      suppressSceneCaptions(CAPTION_FAST_PASS_SUPPRESS_MS);
       lastScrollInputAtRef.current = performance.now();
       if (Math.abs(delta) > 0.0001) {
         scrollDirectionRef.current = delta > 0 ? -1 : 1;
@@ -2929,7 +3186,7 @@ export function HeroScrollVideoSection() {
           onClick={handleVideoClick}
           onKeyDown={handleVideoKeyDown}
           className={clsx(
-            "absolute inset-0 z-0 block h-full w-full appearance-none border-0 bg-transparent p-0",
+            "absolute inset-0 z-[3] block h-full w-full appearance-none border-0 bg-transparent p-0",
             isListView || isWorksActive ? "pointer-events-none" : "cursor-pointer"
           )}
         >
@@ -3062,110 +3319,14 @@ export function HeroScrollVideoSection() {
               </div>
 
               <div
-                key={currentScene.id}
+                ref={captionLayerRef}
                 className={clsx(
-                  "w-[min(92vw,1120px)] max-w-none text-center transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                  !isListView && !isWorksActive && "tao-slide-text",
-                  isListView || isWorksActive
-                    ? "translate-y-8 scale-[0.98] opacity-0"
-                    : "translate-y-0 opacity-100",
-                  isListView || isWorksActive ? "text-[#171411]" : "text-white"
+                  "flor-caption-sync-layer w-[min(92vw,1120px)] max-w-none",
+                  isListView || isWorksActive ? "flor-caption-sync-hidden text-[#171411]" : "text-white"
                 )}
               >
-                <p
-                  className={clsx(
-                    "font-mono text-[11px] uppercase tracking-[0.48em] md:text-xs",
-                    isListView || isWorksActive ? "text-[#171411]/62" : "text-white/70"
-                  )}
-                >
-                  {currentScene.kicker}
-                </p>
-                <h1 className="flor-video-caption-heading mt-5" aria-label={currentScene.heading}>
-                  <span className="sr-only">{currentScene.heading}</span>
-                  <svg
-                    aria-hidden="true"
-                    className="flor-video-caption-svg"
-                    viewBox="-280 -24 1760 208"
-                    preserveAspectRatio="xMidYMid meet"
-                  >
-                    <defs>
-                      <filter
-                        id={`${captionFilterId}-caption-soft-glow`}
-                        x="-18%"
-                        y="-35%"
-                        width="136%"
-                        height="170%"
-                        colorInterpolationFilters="sRGB"
-                      >
-                        <feGaussianBlur stdDeviation="3.5" result="glowA" />
-                        <feGaussianBlur stdDeviation="9" result="glowB" />
-                        <feMerge>
-                          <feMergeNode in="glowB" />
-                          <feMergeNode in="glowA" />
-                          <feMergeNode in="SourceGraphic" />
-                        </feMerge>
-                      </filter>
-                      <linearGradient
-                        id={`${captionFilterId}-caption-gradient`}
-                        gradientUnits="userSpaceOnUse"
-                        x1="-280"
-                        y1="0"
-                        x2="1480"
-                        y2="0"
-                      >
-                        <stop offset="0%" stopColor={captionPalette[0]} stopOpacity="0.92" />
-                        <stop offset="16%" stopColor={captionPalette[1]} stopOpacity="1" />
-                        <stop offset="34%" stopColor={captionPalette[2]} stopOpacity="1" />
-                        <stop offset="52%" stopColor={captionPalette[3]} stopOpacity="1" />
-                        <stop offset="70%" stopColor={captionPalette[0]} stopOpacity="1" />
-                        <stop offset="86%" stopColor={captionPalette[2]} stopOpacity="1" />
-                        <stop offset="100%" stopColor={captionPalette[1]} stopOpacity="0.92" />
-                        <animateTransform
-                          attributeName="gradientTransform"
-                          type="translate"
-                          values="-720 0; 720 0; -720 0"
-                          dur="3.6s"
-                          repeatCount="indefinite"
-                        />
-                      </linearGradient>
-                    </defs>
-                    <text
-                      className="flor-video-caption-line flor-video-caption-line-glow"
-                      x="600"
-                      y="88"
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      fontSize={captionFontSize}
-                      letterSpacing={captionLetterSpacing}
-                      fill="none"
-                      stroke={`url(#${captionFilterId}-caption-gradient)`}
-                      filter={`url(#${captionFilterId}-caption-soft-glow)`}
-                    >
-                      {currentScene.heading}
-                    </text>
-                    <text
-                      className="flor-video-caption-line flor-video-caption-line-main"
-                      x="600"
-                      y="88"
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      fontSize={captionFontSize}
-                      letterSpacing={captionLetterSpacing}
-                      fill="none"
-                      stroke={`url(#${captionFilterId}-caption-gradient)`}
-                    >
-                      {currentScene.heading}
-                    </text>
-                  </svg>
-                </h1>
-                <p
-                  className={clsx(
-                    "mt-4 text-sm uppercase tracking-[0.4em] md:text-[13px]",
-                    isListView || isWorksActive ? "text-[#171411]/58" : "text-white/70"
-                  )}
-                >
-                  {currentScene.title}
-                </p>
+                {renderCaptionScene(homeSlides[captionPair.from] ?? currentScene, "from")}
+                {renderCaptionScene(homeSlides[captionPair.to] ?? currentScene, "to")}
               </div>
 
               <div className="hidden h-14 w-14 md:block" />
@@ -3179,21 +3340,42 @@ export function HeroScrollVideoSection() {
             )}
           >
             <div className="relative mx-auto max-w-[1120px] text-white">
-              <div className="absolute left-0 right-0 top-[2.7rem] h-px bg-white/72 md:top-[3rem]" />
-              <span className="absolute left-0 top-[2.7rem] h-0 w-0 -translate-y-1/2 border-b-[5px] border-r-[18px] border-t-[5px] border-b-transparent border-r-white/78 border-t-transparent md:top-[3rem]" />
-              <span className="absolute right-0 top-[2.7rem] h-0 w-0 -translate-y-1/2 border-b-[5px] border-l-[18px] border-t-[5px] border-b-transparent border-l-white/78 border-t-transparent md:top-[3rem]" />
+              <div
+                className={clsx(
+                  "flor-bottom-caption-chrome absolute left-0 right-0 top-[2.7rem] h-px bg-white/72 md:top-[3rem]",
+                  !captionsVisible && "flor-bottom-caption-hidden"
+                )}
+              />
+              <span
+                className={clsx(
+                  "flor-bottom-caption-chrome absolute left-0 top-[2.7rem] h-0 w-0 -translate-y-1/2 border-b-[5px] border-r-[18px] border-t-[5px] border-b-transparent border-r-white/78 border-t-transparent md:top-[3rem]",
+                  !captionsVisible && "flor-bottom-caption-hidden"
+                )}
+              />
+              <span
+                className={clsx(
+                  "flor-bottom-caption-chrome absolute right-0 top-[2.7rem] h-0 w-0 -translate-y-1/2 border-b-[5px] border-l-[18px] border-t-[5px] border-b-transparent border-l-white/78 border-t-transparent md:top-[3rem]",
+                  !captionsVisible && "flor-bottom-caption-hidden"
+                )}
+              />
 
               <div className="grid grid-cols-[1fr,auto,1fr] items-start gap-4 md:gap-8">
                 <button
                   type="button"
                   onClick={() => scrollToScene(previousSceneIndex)}
-                  className="pointer-events-auto justify-self-start text-left"
+                  className={clsx(
+                    "flor-bottom-caption-side pointer-events-auto justify-self-start text-left",
+                    !captionsVisible && "flor-bottom-caption-hidden"
+                  )}
                 >
                   <p className="font-mono text-[13px] tracking-[0.16em] text-white/52 md:text-[14px]">
                     #{previousScene.id}
                   </p>
                   <p
-                    className="flor-bottom-caption-gradient mt-1 text-[0.95rem] font-semibold italic tracking-[0.05em] text-white/95 md:text-[1.6rem]"
+                    className={clsx(
+                      "flor-bottom-caption-gradient mt-1 text-[0.95rem] font-semibold italic tracking-[0.05em] text-white/95 md:text-[1.6rem]",
+                      !captionsVisible && "flor-bottom-caption-hidden"
+                    )}
                     style={getCaptionGradientStyle(previousScene)}
                   >
                     {previousScene.title}
@@ -3212,13 +3394,19 @@ export function HeroScrollVideoSection() {
                 <button
                   type="button"
                   onClick={() => scrollToScene(nextSceneIndex)}
-                  className="pointer-events-auto justify-self-end text-right"
+                  className={clsx(
+                    "flor-bottom-caption-side pointer-events-auto justify-self-end text-right",
+                    !captionsVisible && "flor-bottom-caption-hidden"
+                  )}
                 >
                   <p className="font-mono text-[13px] tracking-[0.16em] text-white/92 md:text-[14px]">
                     #{nextScene.id}
                   </p>
                   <p
-                    className="flor-bottom-caption-gradient mt-1 text-[0.95rem] font-semibold italic tracking-[0.05em] text-white md:text-[1.6rem]"
+                    className={clsx(
+                      "flor-bottom-caption-gradient mt-1 text-[0.95rem] font-semibold italic tracking-[0.05em] text-white md:text-[1.6rem]",
+                      !captionsVisible && "flor-bottom-caption-hidden"
+                    )}
                     style={getCaptionGradientStyle(nextScene)}
                   >
                     {nextScene.title}

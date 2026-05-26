@@ -224,6 +224,214 @@ body.is-loading {
   transform-origin: center center;
 }
 
+.flor-caption-sync-layer {
+  --caption-out: 0;
+  --caption-in: 0;
+  --caption-out-fast: 0;
+  --caption-in-fast: 0;
+  --caption-speed: 1;
+  --caption-direction: 1;
+  --caption-out-clip: 0%;
+  --caption-in-clip: 100%;
+  --caption-from-reveal: 100%;
+  --caption-to-reveal: 0%;
+  --caption-from-opacity: 1;
+  --caption-to-opacity: 0;
+  --caption-from-sub-opacity: 1;
+  --caption-to-sub-opacity: 0;
+  --caption-from-x: 0px;
+  --caption-from-y: 0px;
+  --caption-to-x: 16px;
+  --caption-to-y: 30px;
+  --caption-from-scale: 1;
+  --caption-to-scale: 0.986;
+  --caption-from-blur: 0px;
+  --caption-to-blur: 9px;
+  position: relative;
+  height: clamp(12rem, 24vw, 18rem);
+  text-align: center;
+  transition:
+    opacity 0.36s cubic-bezier(0.19, 1, 0.22, 1),
+    transform 0.46s cubic-bezier(0.19, 1, 0.22, 1),
+    filter 0.36s cubic-bezier(0.19, 1, 0.22, 1);
+  will-change: opacity, transform, filter;
+}
+
+.flor-caption-sync-hidden {
+  opacity: 0;
+  filter: blur(8px);
+  transform: translate3d(0, 18px, 0) scale(0.99);
+}
+
+.flor-caption-sync-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+  will-change: opacity, transform, filter;
+}
+
+.flor-caption-sync-piece {
+  display: block;
+  overflow: hidden;
+  transform-origin: center center;
+  will-change: opacity, transform, filter, clip-path;
+}
+
+.flor-caption-sync-heading {
+  overflow: visible;
+}
+
+.flor-caption-sync-from {
+  filter: blur(var(--caption-from-blur));
+  opacity: var(--caption-from-opacity);
+  transform:
+    translate3d(
+      var(--caption-from-x),
+      var(--caption-from-y),
+      0
+    )
+    scale(var(--caption-from-scale));
+}
+
+.flor-caption-sync-to {
+  filter: blur(var(--caption-to-blur));
+  opacity: var(--caption-to-opacity);
+  transform:
+    translate3d(
+      var(--caption-to-x),
+      var(--caption-to-y),
+      0
+    )
+    scale(var(--caption-to-scale));
+}
+
+.flor-caption-sync-from .flor-caption-sync-piece {
+  clip-path: inset(0 0 var(--caption-out-clip) 0);
+}
+
+.flor-caption-sync-to .flor-caption-sync-piece {
+  clip-path: inset(var(--caption-in-clip) 0 0 0);
+}
+
+.flor-caption-sync-from .flor-caption-sync-kicker,
+.flor-caption-sync-from .flor-caption-sync-title {
+  opacity: var(--caption-from-sub-opacity);
+}
+
+.flor-caption-sync-to .flor-caption-sync-kicker,
+.flor-caption-sync-to .flor-caption-sync-title {
+  opacity: var(--caption-to-sub-opacity);
+}
+
+.flor-caption-sync-title {
+  transform: translate3d(0, 0, 0);
+}
+
+@supports ((mask-image: linear-gradient(#000, transparent)) or (-webkit-mask-image: linear-gradient(#000, transparent))) {
+  .flor-caption-sync-from .flor-caption-sync-piece {
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      #000 0%,
+      #000 calc(var(--caption-from-reveal) - 10%),
+      transparent var(--caption-from-reveal)
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      #000 0%,
+      #000 calc(var(--caption-from-reveal) - 10%),
+      transparent var(--caption-from-reveal)
+    );
+  }
+
+  .flor-caption-sync-to .flor-caption-sync-piece {
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      #000 0%,
+      #000 var(--caption-to-reveal),
+      transparent calc(var(--caption-to-reveal) + 12%)
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      #000 0%,
+      #000 var(--caption-to-reveal),
+      transparent calc(var(--caption-to-reveal) + 12%)
+    );
+  }
+}
+
+.flor-scene-caption-panel {
+  transition:
+    opacity 0.2s cubic-bezier(0.19, 1, 0.22, 1),
+    transform 0.26s cubic-bezier(0.19, 1, 0.22, 1),
+    filter 0.2s cubic-bezier(0.19, 1, 0.22, 1);
+  will-change: opacity, transform, filter;
+}
+
+.flor-scene-caption-visible {
+  opacity: 1;
+  filter: blur(0);
+  transform: translate3d(0, 0, 0) scale(1);
+}
+
+.flor-scene-caption-hidden {
+  opacity: 0;
+  filter: blur(7px);
+  pointer-events: none;
+  transform: translate3d(0, 12px, 0) scale(1.01);
+}
+
+.flor-scene-caption-visible > p,
+.flor-scene-caption-visible .flor-video-caption-heading {
+  animation: flor-caption-form-in 0.48s cubic-bezier(0.19, 1, 0.22, 1) both;
+  transform-origin: center bottom;
+  will-change: clip-path, opacity, transform, filter;
+}
+
+.flor-scene-caption-hidden > p,
+.flor-scene-caption-hidden .flor-video-caption-heading {
+  clip-path: inset(0 0 100% 0);
+  filter: blur(8px);
+  opacity: 0;
+  transform: translate3d(0, -18px, 0) scale(0.99);
+  transition:
+    clip-path 0.24s cubic-bezier(0.76, 0, 0.24, 1),
+    opacity 0.18s cubic-bezier(0.76, 0, 0.24, 1),
+    transform 0.24s cubic-bezier(0.76, 0, 0.24, 1),
+    filter 0.18s cubic-bezier(0.76, 0, 0.24, 1);
+}
+
+.flor-scene-caption-visible .flor-video-caption-heading {
+  animation-delay: 0.035s;
+}
+
+.flor-scene-caption-visible > p:last-child {
+  animation-delay: 0.07s;
+}
+
+@keyframes flor-caption-form-in {
+  from {
+    clip-path: inset(100% 0 0 0);
+    filter: blur(9px);
+    opacity: 0;
+    transform: translate3d(0, 20px, 0) scale(1.012);
+  }
+
+  45% {
+    opacity: 1;
+  }
+
+  to {
+    clip-path: inset(0 0 0 0);
+    filter: blur(0);
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
 .flor-video-caption-heading {
   position: relative;
   isolation: isolate;
@@ -231,18 +439,6 @@ body.is-loading {
   height: clamp(5.6rem, 13vw, 10.8rem);
   margin-left: auto;
   margin-right: auto;
-}
-
-.flor-video-caption-heading::before {
-  content: "";
-  position: absolute;
-  inset: 14% -4% 10%;
-  z-index: -1;
-  border-radius: 999px;
-  background:
-    radial-gradient(ellipse at center, rgba(5, 6, 10, 0.24) 0%, rgba(5, 6, 10, 0.12) 46%, transparent 74%);
-  opacity: 0.82;
-  pointer-events: none;
 }
 
 .flor-video-caption-svg {
@@ -297,6 +493,17 @@ body.is-loading {
   -webkit-background-clip: text;
   background-clip: text;
   animation: flor-bottom-caption-flow 3.6s linear infinite alternate;
+  transition:
+    opacity 0.24s cubic-bezier(0.19, 1, 0.22, 1),
+    transform 0.3s cubic-bezier(0.19, 1, 0.22, 1),
+    filter 0.24s cubic-bezier(0.19, 1, 0.22, 1);
+  will-change: opacity, transform, filter;
+}
+
+.flor-bottom-caption-hidden {
+  opacity: 0;
+  filter: blur(4px);
+  transform: translate3d(0, 6px, 0);
 }
 
 @keyframes flor-bottom-caption-flow {
