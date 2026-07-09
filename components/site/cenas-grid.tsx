@@ -3,6 +3,7 @@
 import {
   forwardRef,
   type RefObject,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -53,6 +54,16 @@ function getCanvasPixelRatio() {
 const useIsoLayoutEffect =
   typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
+type WorksScrollFrame = {
+  height: number;
+  scrollY: number;
+  top: number;
+};
+
+type RegisterWorksScrollSubscriber = (
+  subscriber: (frame: WorksScrollFrame) => void
+) => () => void;
+
 const tajimaSerifStyle = {
   fontFamily: "Georgia, 'Times New Roman', serif"
 };
@@ -69,6 +80,7 @@ const cardZoomVertexShader = `
   uniform vec4 uCorners;
   uniform float uZoomScale;
   uniform float uTime;
+  uniform float uProgress;
   varying vec2 vUv;
   varying float vDark;
   varying float vMorph;
@@ -101,7 +113,10 @@ const cardZoomVertexShader = `
     vec4 slidePosition = vec4(slideXY, uZoomScale + sway + centreFold, 1.0);
 
     vMorph = corner;
-    vDark = mix(1.0, 0.7, corner);
+    // Dim slightly mid-flight, but land at FULL brightness: the hero canvas takes
+    // over at 100% right after the zoom, so ending dark caused a brightness pop
+    // (captured on screencast: video settled at 70% then jumped to 100%).
+    vDark = mix(1.0, 0.7, corner * (1.0 - smoothstep(0.7, 0.98, uProgress)));
     gl_Position = projectionMatrix * viewMatrix * mix(listPosition, slidePosition, corner);
   }
 `;
@@ -275,6 +290,10 @@ interface WorksHoverCanvasHandle {
     clientY: number
   ) => WorksHoverPointerResult;
   zoomIn: (index: number, onComplete: () => void) => boolean;
+  // Exposes the work's <video> element so the hero can render the SAME element as
+  // its slide texture across the handoff — identical frames, no seam (Tao shares
+  // one video pool; this bridges ours).
+  getZoomVideo: (index: number) => HTMLVideoElement | null;
 }
 
 type WorksHoverUniforms = {
@@ -771,6 +790,7 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
         destroyItem(item);
         apiRef.current.items.delete(index);
       },
+      getZoomVideo: (index) => apiRef.current.items.get(index)?.video ?? null,
       enter: (index) => {
         const item = apiRef.current.items.get(index);
         if (!item) {
@@ -950,7 +970,7 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
           item.zoomUniforms.uTexture.value = videoTexture ?? item.stillTexture;
           item.zoomUniforms.uListPosition.value.set(startX, startY);
           item.zoomUniforms.uListSize.value.set(rect.width, rect.height);
-          item.zoomUniforms.uSlideSize.value.set(api.viewport.width * 1.02, api.viewport.height * 1.02);
+          item.zoomUniforms.uSlideSize.value.set(api.viewport.width, api.viewport.height);
           item.zoomUniforms.uTextureAspect.value = listAspect;
           item.zoomUniforms.uListAspect.value = listAspect;
           item.zoomUniforms.uSlideAspect.value = slideAspect;
@@ -976,19 +996,30 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
 
         //  _zoomInComplete at delay 1.4s
         tl.call(() => {
-          item.isZooming = false;
           if (api.renderer && api.scene && api.camera) {
             api.renderer.render(api.scene, api.camera);
           }
-          if (canvasRef.current) {
-            canvasRef.current.style.zIndex = "";
-          }
-          restoreZoomFadeTargets(item);
-          if (item.zoomMesh) item.zoomMesh.visible = false;
-          if (item.src) {
-            item.video.pause();
-          }
+
+          // Hand the slide off to the hero, which renders the SAME <video> element
+          // (getZoomVideo bridge) at the exact cover scale the zoom just landed on.
+          // The hero hides the works layer 1-2 frames later (so its canvas is
+          // already presented underneath) — keep our final zoom frame intact until
+          // then: defer ALL cleanup past that window. Resetting z-index/list
+          // opacity immediately exposed the white grid for those frames.
           onComplete();
+
+          window.setTimeout(() => {
+            item.isZooming = false;
+            restoreZoomFadeTargets(item);
+            if (item.zoomMesh) item.zoomMesh.visible = false;
+            if (canvasRef.current) {
+              canvasRef.current.style.zIndex = "";
+            }
+          }, 200);
+
+          // No pause here: ownership of the playing element transfers to the hero
+          // (it IS the slide texture now — Tao's shared video player). The hero
+          // pauses it when the user leaves the slide; destroyItem covers unmount.
         }, [], 1.4);
         return true;
       }
@@ -1021,16 +1052,33 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
         }
       });
 
+      let renderWidth = 0;
+      let renderHeight = 0;
+      let renderPixelRatio = 0;
+
       const resize = () => {
         const width = window.innerWidth;
         const height = window.innerHeight;
+        const pixelRatio = getCanvasPixelRatio();
+
+        if (
+          width === renderWidth &&
+          height === renderHeight &&
+          pixelRatio === renderPixelRatio
+        ) {
+          return;
+        }
+
+        renderWidth = width;
+        renderHeight = height;
+        renderPixelRatio = pixelRatio;
         apiRef.current.viewport.width = width;
         apiRef.current.viewport.height = height;
         const fov = 60;
         camera.aspect = width / Math.max(height, 1);
         camera.position.z = (height / 2) / Math.tan((fov * Math.PI / 180) / 2);
         camera.updateProjectionMatrix();
-        renderer.setPixelRatio(getCanvasPixelRatio());
+        renderer.setPixelRatio(pixelRatio);
         renderer.setSize(width, height, false);
       };
 
@@ -1049,6 +1097,8 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
         }
 
         let hasActiveWork = false;
+        const frameNow = performance.now();
+        const elapsed = (frameNow - startedAt) / 1000;
 
         api.items.forEach((item) => {
           // ── Card-click zoom: TAO ControllerThreeListItemZoom._onUpdate ─────
@@ -1059,10 +1109,16 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
             const sway = t < 0.5 ? 2 * t : 2 * (1 - t); // bell-curve peak at t=0.5
             const cDelays = [0, 0.1, 0.2, 0.3]; // TAO c = [0,.1,.2,.3]
             const r = item.zoomRandom;
-            item.zoomUniforms.uTime.value = (performance.now() - startedAt) / 1000;
+            item.zoomUniforms.uTime.value = elapsed;
             item.zoomUniforms.uSway.value = sway;
             item.zoomUniforms.uProgress.value = t;
-            item.zoomUniforms.uSlideSize.value.set(api.viewport.width * 1.02, api.viewport.height * 1.02);
+            // End the zoom at EXACTLY the viewport cover scale: no 1.02 oversize
+            // and decay the perspective z-offset to zero near completion. The hero
+            // canvas takes over at plain 100% cover of the same video element, so
+            // any residual scale difference on the final frame reads as a blink.
+            item.zoomUniforms.uSlideSize.value.set(api.viewport.width, api.viewport.height);
+            item.zoomUniforms.uZoomScale.value =
+              Math.min(api.viewport.width, api.viewport.height) * 0.065 * (1 - smoothStepZoom(0.75, 1, e));
             item.zoomUniforms.uSlideAspect.value = api.viewport.width / Math.max(api.viewport.height, 1);
             item.zoomUniforms.uCorners.value.set(
               smoothStepZoom(cDelays[r[0]], 0.7, e),
@@ -1096,7 +1152,6 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
           }
 
           hasActiveWork = true;
-          const elapsed = (performance.now() - startedAt) / 1000;
           const phase = elapsed * Math.PI * 2;
           item.uniforms.uTime.value.set(
             elapsed,
@@ -1181,7 +1236,7 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
 function CenaCard({
   item,
   index,
-  scrollRootRef,
+  registerScrollSubscriber,
   hoverCanvasRef,
   onWorkIntent,
   onWorkSelect,
@@ -1190,10 +1245,10 @@ function CenaCard({
 }: {
   item: WorkItem;
   index: number;
-  scrollRootRef?: RefObject<HTMLElement | null>;
+  registerScrollSubscriber: RegisterWorksScrollSubscriber;
   hoverCanvasRef?: RefObject<WorksHoverCanvasHandle | null>;
   onWorkIntent?: (index: number) => void;
-  onWorkSelect?: (index: number) => void;
+  onWorkSelect?: (index: number, sharedVideo?: HTMLVideoElement | null) => void;
   entryKey?: number;
   entryMode?: "auto" | "manual";
 }) {
@@ -1218,7 +1273,6 @@ function CenaCard({
   const currentY = useRef(0);
   const targetY  = useRef(0);
   const rafId    = useRef<number | null>(null);
-  const scrollFrameId = useRef<number | null>(null);
   const hiddenRef = useRef(false);
 
   const tweenRef = useRef<gsap.core.Tween | null>(null);
@@ -1413,25 +1467,6 @@ function CenaCard({
       card.style.pointerEvents = hidden ? "none" : "";
     };
 
-    const getViewport = () => {
-      const scrollRoot = scrollRootRef?.current;
-
-      if (scrollRoot) {
-        const rect = scrollRoot.getBoundingClientRect();
-        return {
-          height: scrollRoot.clientHeight || window.innerHeight,
-          scrollY: scrollRoot.scrollTop,
-          top: rect.top
-        };
-      }
-
-      return {
-        height: window.innerHeight,
-        scrollY: window.scrollY,
-        top: 0
-      };
-    };
-
     const getDirectionalOffset = (height: number) => {
       const width = window.innerWidth;
       const baseOffset = width < 768 ? 200 : width < 1024 ? 250 : 500;
@@ -1453,8 +1488,7 @@ function CenaCard({
       rafId.current = null;
     };
 
-    const updateScrollTarget = () => {
-      const viewport = getViewport();
+    const updateScrollTarget = (viewport: WorksScrollFrame) => {
       const layoutRect = layoutHost.getBoundingClientRect();
       const layoutTop = viewport.scrollY + layoutRect.top - viewport.top;
       const height = layoutRect.height || card.offsetHeight;
@@ -1498,35 +1532,14 @@ function CenaCard({
       }
     };
 
-    const onScroll = () => {
-      if (scrollFrameId.current !== null) {
-        return;
-      }
-
-      scrollFrameId.current = requestAnimationFrame(() => {
-        scrollFrameId.current = null;
-        updateScrollTarget();
-      });
-    };
-
-    const scrollRoot = scrollRootRef?.current;
-    const scrollTarget: HTMLElement | Window = scrollRoot ?? window;
-
-    scrollTarget.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
-    updateScrollTarget();
+    const unregisterScroll = registerScrollSubscriber(updateScrollTarget);
 
     return () => {
-      scrollTarget.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
+      unregisterScroll();
       stopTick();
-      if (scrollFrameId.current !== null) {
-        cancelAnimationFrame(scrollFrameId.current);
-        scrollFrameId.current = null;
-      }
       tweenRef.current?.kill();
     };
-  }, [entryMode, scrollRootRef]);
+  }, [entryMode, registerScrollSubscriber]);
 
   useEffect(() => {
     if (entryMode !== "manual" || entryKey === 0) {
@@ -1586,7 +1599,7 @@ function CenaCard({
           routeManagerPlus.goto(path, null, true);
 
           if (onWorkSelect) {
-            onWorkSelect(index);
+            onWorkSelect(index, hoverCanvasRef?.current?.getZoomVideo(index) ?? null);
             window.setTimeout(() => {
               isNavigatingRef.current = false;
             }, 120);
@@ -1665,7 +1678,7 @@ function CenaCard({
 type CenasGridSectionProps = {
   onHomeClick?: () => void;
   onWorkIntent?: (index: number) => void;
-  onWorkSelect?: (index: number) => void;
+  onWorkSelect?: (index: number, sharedVideo?: HTMLVideoElement | null) => void;
   scrollRootRef?: RefObject<HTMLElement | null>;
   entryKey?: number;
   entryMode?: "auto" | "manual";
@@ -1684,8 +1697,70 @@ export function CenasGridSection({
   const sectionRef  = useRef<HTMLElement>(null);
   const wrapperRefs = useRef<(HTMLDivElement | null)[]>([]);
   const hoverCanvasRef = useRef<WorksHoverCanvasHandle>(null);
+  const scrollSubscribersRef = useRef(new Set<(frame: WorksScrollFrame) => void>());
+  const scrollFrameRef = useRef<number | null>(null);
   const router = useRouter();
   const isEmbedded = Boolean(onHomeClick);
+
+  const readScrollFrame = useCallback((): WorksScrollFrame => {
+    const scrollRoot = scrollRootRef?.current;
+
+    if (scrollRoot) {
+      const rect = scrollRoot.getBoundingClientRect();
+      return {
+        height: scrollRoot.clientHeight || window.innerHeight,
+        scrollY: scrollRoot.scrollTop,
+        top: rect.top
+      };
+    }
+
+    return {
+      height: window.innerHeight,
+      scrollY: window.scrollY,
+      top: 0
+    };
+  }, [scrollRootRef]);
+
+  const registerScrollSubscriber = useCallback<RegisterWorksScrollSubscriber>(
+    (subscriber) => {
+      scrollSubscribersRef.current.add(subscriber);
+      subscriber(readScrollFrame());
+
+      return () => {
+        scrollSubscribersRef.current.delete(subscriber);
+      };
+    },
+    [readScrollFrame]
+  );
+
+  useEffect(() => {
+    const scrollRoot = scrollRootRef?.current;
+    const scrollTarget: HTMLElement | Window = scrollRoot ?? window;
+
+    const flushScroll = () => {
+      scrollFrameRef.current = null;
+      const frame = readScrollFrame();
+      scrollSubscribersRef.current.forEach((subscriber) => subscriber(frame));
+    };
+
+    const scheduleScroll = () => {
+      if (scrollFrameRef.current !== null) return;
+      scrollFrameRef.current = requestAnimationFrame(flushScroll);
+    };
+
+    scrollTarget.addEventListener("scroll", scheduleScroll, { passive: true });
+    window.addEventListener("resize", scheduleScroll);
+    scheduleScroll();
+
+    return () => {
+      scrollTarget.removeEventListener("scroll", scheduleScroll);
+      window.removeEventListener("resize", scheduleScroll);
+      if (scrollFrameRef.current !== null) {
+        cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    };
+  }, [readScrollFrame, scrollRootRef]);
 
   // ─      (): JS absolute positioning ─────────────────────────────
   // 2 cols: h=[50,0], colGap=100px
@@ -1732,19 +1807,11 @@ export function CenasGridSection({
     const header = headerRef.current;
     if (!header) return;
 
-    const onScroll = () => {
-      const sy = scrollRootRef?.current?.scrollTop ?? window.scrollY;
-      header.style.transform = `translateY(${Math.max(-30, 60 - sy * 0.65)}px)`;
-      header.style.opacity   = String(Math.max(0, 1 - sy / 180));
-    };
-
-    onScroll();
-    const scrollRoot = scrollRootRef?.current;
-    const scrollTarget: HTMLElement | Window = scrollRoot ?? window;
-    scrollTarget.addEventListener("scroll", onScroll, { passive: true });
-
-    return () => scrollTarget.removeEventListener("scroll", onScroll);
-  }, [scrollRootRef]);
+    return registerScrollSubscriber(({ scrollY }) => {
+      header.style.transform = `translateY(${Math.max(-30, 60 - scrollY * 0.65)}px)`;
+      header.style.opacity = String(Math.max(0, 1 - scrollY / 180));
+    });
+  }, [registerScrollSubscriber]);
 
   // ── Section fade-in on mount (Tajima: autoAlpha 0→1, 0.5s) ──────────────
   useEffect(() => {
@@ -1820,7 +1887,7 @@ export function CenasGridSection({
               <CenaCard
                 item={item}
                 index={i}
-                scrollRootRef={scrollRootRef}
+                registerScrollSubscriber={registerScrollSubscriber}
                 hoverCanvasRef={hoverCanvasRef}
                 onWorkIntent={onWorkIntent}
                 onWorkSelect={onWorkSelect}

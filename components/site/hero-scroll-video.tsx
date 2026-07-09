@@ -1,3 +1,4 @@
+
 "use client";
 
 import clsx from "clsx";
@@ -36,11 +37,6 @@ type HomeSlide = {
   previewFrame: number;
 };
 
-type CaptionPair = {
-  from: number;
-  to: number;
-};
-
 const HERO_FRAME_COUNT = 689;
 const INTRO_SCROLL_UNITS = 7.6;
 const WORK_SCROLL_UNITS = 0.9;
@@ -64,21 +60,17 @@ const TAO_SNAP_THRESHOLD = TAO_MAX_SCROLL_IMPULSE * 0.25;
 const TAO_SNAP_FORCE = 0.035;
 const TAO_SETTLE_EPSILON = 0.001;
 const SCROLL_SNAP_IDLE_MS = 110;
-const CAPTION_REVEAL_IDLE_MS = 45;
-const CAPTION_PROGRESS_EPSILON = 0.11;
-const CAPTION_VELOCITY_EPSILON = 0.012;
-const CAPTION_CHANGE_SUPPRESS_MS = 55;
-const CAPTION_FAST_PASS_SUPPRESS_MS = 95;
-const CAPTION_OUT_START = 0.02;
-const CAPTION_OUT_END = 0.48;
-const CAPTION_IN_START = 0.12;
-const CAPTION_IN_END = 0.76;
-const CAPTION_FAST_FADE_START = 0.01;
-const CAPTION_FAST_FADE_END = 0.034;
+// Tao's ControllerSlideSliding: captions hide the moment slideIndex changes
+// (midpoint crossing) and reappear 0.7s after the LAST change — a debounce, not
+// a per-frame velocity/progress threshold. The route commits on the same timer.
+const CAPTION_REVEAL_DEBOUNCE_MS = 700;
+// Tao's ControllerSlideDetails offset: base 30, scaled by the viewport aspect on
+// the dominant axis (x *= w/h when wide, y *= h/w when tall), signed by slideDir.
+const CAPTION_SLIDE_BASE = 30;
 const VISUAL_PROGRESS_RESPONSE_MIN = 0.32;
 const VISUAL_PROGRESS_RESPONSE_MAX = 0.68;
 const VISUAL_VELOCITY_RESPONSE = 0.24;
-const ROUTE_SETTLE_MS = 260;
+const ROUTE_SETTLE_MS = CAPTION_REVEAL_DEBOUNCE_MS;
 const MAX_SHADER_PIXEL_RATIO = 1.5;
 const SLIDE_PREVIEW_MAX_CONNECTIONS = 2;
 
@@ -203,11 +195,49 @@ const homeSlides: HomeSlide[] = [
   }))
 ];
 
-const worksThreeSlideTiming = {
-  shaderMs: 1200,
-  cardsMs: 760,
-  completeMs: 1200
-} as const;
+// Tao Tajima serves each clip at a resolution matched to the device (his
+// `vimeo_digest` carries per-size encodes). We mirror that with two local
+// encodes per work — `<slug>.mp4` (1080p30) and `<slug>-720.mp4` (720p30) — and
+// pick once on the client. 720p roughly quarters the WebGL decode cost vs the
+// original 1080p/60, which is what removes the stutter on smaller/weaker
+// devices while large screens keep full resolution.
+function lowResVideoSrc(src: string) {
+  return src ? src.replace(/\.mp4$/i, "-720.mp4") : src;
+}
+
+let heroVideoQualityApplied = false;
+
+function applyHeroVideoQuality() {
+  if (heroVideoQualityApplied || typeof window === "undefined") return;
+  heroVideoQualityApplied = true;
+
+  // Tao serves 960x540@24 to EVERY device (upscaled fullscreen) — decode cost,
+  // not bitrate, is what stutters the WebGL loop, because transitions decode two
+  // clips at once. 720p30 is our default everywhere; 1080p only on large
+  // viewports with plenty of cores, where the 2x decode budget provably fits.
+  const cores = navigator.hardwareConcurrency || 4;
+  const useHighRes = window.innerWidth >= 1600 && cores >= 8;
+  if (useHighRes) return;
+
+  // Mutate both the hero slides and the shared WORKS list (the works grid reads
+  // WORKS directly) so every video src/comparison across the app resolves to the
+  // same 720p variant — keeping the dataset.src === slide.src checks consistent.
+  for (const slide of homeSlides) {
+    if (slide.kind === "work" && slide.src) {
+      slide.src = lowResVideoSrc(slide.src);
+    }
+  }
+
+  for (const work of WORKS) {
+    if (work.src) {
+      work.src = lowResVideoSrc(work.src);
+    }
+  }
+}
+
+// Delay before the works grid cards play their entry drop, once the zoom-out
+// into the list has mostly landed.
+const WORKS_ENTRY_CARDS_MS = 760;
 
 const captionPalettes = [
   ["#f49bc7", "#ffffff", "#ff5fa8", "#ffcfdf"],
@@ -488,7 +518,9 @@ type WorksZoomTransitionProps = {
   active: boolean;
   direction: "open" | "close";
   sourceImageSrc: string;
-  sourceVideoRef: RefObject<HTMLVideoElement | null>;
+  // Resolves the LIVE video element that should morph during the zoom (Tao
+  // morphs the playing slide plane itself — a still here reads as a freeze).
+  getSourceVideo: () => HTMLVideoElement | null;
   targetWorkIndex: number;
   worksLayerRef: RefObject<HTMLDivElement | null>;
   onComplete: () => void;
@@ -498,7 +530,7 @@ function WorksZoomTransition({
   active,
   direction,
   sourceImageSrc,
-  sourceVideoRef,
+  getSourceVideo,
   targetWorkIndex,
   worksLayerRef,
   onComplete
@@ -506,10 +538,12 @@ function WorksZoomTransition({
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const completeRef = useRef(onComplete);
+  const getSourceVideoRef = useRef(getSourceVideo);
 
   useEffect(() => {
     completeRef.current = onComplete;
-  }, [onComplete]);
+    getSourceVideoRef.current = getSourceVideo;
+  }, [onComplete, getSourceVideo]);
 
   useEffect(() => {
     if (!active) return;
@@ -655,9 +689,12 @@ function WorksZoomTransition({
       gsap.set(overlay, { autoAlpha: 0, pointerEvents: "none" });
     };
 
-    const canUseVideoTexture = (video: HTMLVideoElement | null) =>
+    // The caller resolves which element is actually feeding the slide (shared
+    // grid video, preview-pool entry or warmed currentVideo), so relevance is
+    // guaranteed — only renderability is checked here. Works for BOTH
+    // directions: Tao's zoom flies a playing video in and out of the card.
+    const canUseVideoTexture = (video: HTMLVideoElement | null): video is HTMLVideoElement =>
       Boolean(
-        direction === "open" &&
         video &&
         video.readyState >= 2 &&
         video.videoWidth > 0 &&
@@ -666,12 +703,12 @@ function WorksZoomTransition({
 
     void (async () => {
       try {
-        const sourceVideo = sourceVideoRef.current;
+        const sourceVideo = getSourceVideoRef.current();
 
         if (canUseVideoTexture(sourceVideo)) {
-          texture = configureTexture(new THREE.VideoTexture(sourceVideo!));
-          textureWidth = sourceVideo!.videoWidth || 1920;
-          textureHeight = sourceVideo!.videoHeight || 1080;
+          texture = configureTexture(new THREE.VideoTexture(sourceVideo));
+          textureWidth = sourceVideo.videoWidth || 1920;
+          textureHeight = sourceVideo.videoHeight || 1080;
           isLiveVideoTexture = true;
         } else {
           texture = configureTexture(await new THREE.TextureLoader().loadAsync(sourceImageSrc));
@@ -826,7 +863,7 @@ function WorksZoomTransition({
     })();
 
     return cleanup;
-  }, [active, direction, sourceImageSrc, sourceVideoRef, targetWorkIndex, worksLayerRef]);
+  }, [active, direction, sourceImageSrc, targetWorkIndex, worksLayerRef]);
 
   return (
     <div
@@ -902,6 +939,7 @@ type SlideShaderRuntime = {
   lastDirection: number;
   lastTexture1Version: number;
   lastTexture2Version: number;
+  hasRendered: boolean;
 };
 
 export function HeroScrollVideoSection() {
@@ -909,23 +947,22 @@ export function HeroScrollVideoSection() {
   const sectionRef = useRef<HTMLElement | null>(null);
   const frameRef = useRef<HTMLImageElement | null>(null);
   const currentVideoRef = useRef<HTMLVideoElement | null>(null);
-  const incomingVideoRef = useRef<HTMLVideoElement | null>(null);
   const posterOverlayRef = useRef<HTMLImageElement | null>(null);
   const transitionCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const captionLayerRef = useRef<HTMLDivElement | null>(null);
   const currentVideoSrcRef = useRef("");
-  const settledVideoRevealSrcRef = useRef("");
-  const settledVideoRevealCompleteSrcRef = useRef("");
   const activeSceneRef = useRef(0);
   const returnSceneRef = useRef(0);
   const worksLayerRef = useRef<HTMLDivElement | null>(null);
   const currentFrameIndexRef = useRef(1);
   const worksTimingTimersRef = useRef<number[]>([]);
-  const transitionTweenRef = useRef<gsap.core.Tween | gsap.core.Timeline | null>(null);
-  const transitionRenderCleanupRef = useRef<(() => void) | null>(null);
-  const transitionTokenRef = useRef(0);
   const slideShaderRef = useRef<SlideShaderRuntime | null>(null);
   const currentVideoTextureRef = useRef<{ src: string; texture: THREE.VideoTexture } | null>(null);
+  // Video bridge for the works->slide handoff: the hero renders the SAME <video>
+  // element the grid zoomed, so both canvases show identical frames (no seam),
+  // until the hero's own preview for that work is ready.
+  const sharedSlideVideoRef = useRef<{ index: number; video: HTMLVideoElement } | null>(null);
+  const sharedSlideTextureRef = useRef<{ video: HTMLVideoElement; texture: THREE.VideoTexture } | null>(null);
   const slideRafRef = useRef<number | null>(null);
   const targetWorkPositionRef = useRef(0);
   const workPositionRef = useRef(0);
@@ -953,11 +990,12 @@ export function HeroScrollVideoSection() {
   const isWorksActiveRef = useRef(false);
   const isZoomingWorksRef = useRef(false);
   const captionsVisibleRef = useRef(true);
-  const captionSuppressedUntilRef = useRef(0);
-  const captionPairRef = useRef<CaptionPair>({ from: 0, to: 1 });
+  const captionSceneRef = useRef(0);
+  const captionRevealTimerRef = useRef<number | null>(null);
 
   const [activeScene, setActiveScene] = useState(0);
-  const [captionPair, setCaptionPair] = useState<CaptionPair>({ from: 0, to: 1 });
+  const [captionScene, setCaptionScene] = useState(0);
+  const [captionExitScene, setCaptionExitScene] = useState<number | null>(null);
   const [captionsVisible, setCaptionsVisible] = useState(true);
   const [openingAvailable, setOpeningAvailable] = useState(true);
   const [isListView, setIsListView] = useState(false);
@@ -994,25 +1032,69 @@ export function HeroScrollVideoSection() {
     setCaptionVisibility(false);
   };
 
-  const suppressSceneCaptions = (duration = CAPTION_CHANGE_SUPPRESS_MS) => {
-    captionSuppressedUntilRef.current = Math.max(
-      captionSuppressedUntilRef.current,
-      performance.now() + duration
-    );
+  // Tao's show/hide tweens read a direction-signed offset of 30 scaled by the
+  // dominant viewport axis. Written as CSS vars once per hide/reveal cycle (NOT
+  // per frame) — the keyframes pick them up when the animation fires.
+  const syncCaptionRevealOffsets = () => {
+    const layer = captionLayerRef.current;
+    if (!layer) return;
+
+    const aspect = window.innerWidth / Math.max(window.innerHeight, 1);
+    let offsetX = CAPTION_SLIDE_BASE;
+    let offsetY = CAPTION_SLIDE_BASE;
+    if (aspect > 1) {
+      offsetX *= aspect;
+    } else {
+      offsetY *= 1 / Math.max(aspect, 0.0001);
+    }
+
+    const direction = scrollDirectionRef.current < 0 ? -1 : 1;
+    layer.style.setProperty("--caption-reveal-x", `${(direction * offsetX).toFixed(2)}px`);
+    layer.style.setProperty("--caption-reveal-y", `${(direction * offsetY).toFixed(2)}px`);
+  };
+
+  // Tao's ControllerSlideSliding._onChangeSlideIndex: hide the caption the moment
+  // the slide index changes (midpoint crossing) and re-show it 0.7s after the
+  // LAST change. A pure debounce — while the user keeps scrolling the timer keeps
+  // resetting, so exactly ONE caption (the settled slide's) is ever revealed.
+  const restartCaptionRevealTimer = () => {
+    if (captionRevealTimerRef.current !== null) {
+      window.clearTimeout(captionRevealTimerRef.current);
+    }
+
+    captionRevealTimerRef.current = window.setTimeout(() => {
+      captionRevealTimerRef.current = null;
+
+      if (isWorksActiveRef.current || isOpeningSceneRef.current) return;
+
+      setCaptionExitScene(null);
+      setCaptionVisibility(true);
+    }, CAPTION_REVEAL_DEBOUNCE_MS);
+  };
+
+  // Move the on-screen caption to the exit panel (where it plays Tao's 0.5s
+  // QuartIn slide-out) and hide the show panel. The show panel is only ever
+  // hidden while its content is NOT on screen, so this never snaps visibly.
+  const dismissCaptions = () => {
+    if (captionsVisibleRef.current) {
+      setCaptionExitScene(captionSceneRef.current);
+    }
     hideSceneCaptions();
   };
 
-  const setCaptionPairForProgress = (from: number, to: number) => {
-    const nextPair = { from, to };
-    const currentPair = captionPairRef.current;
+  const hideCaptionsForSceneChange = (nextScene: number) => {
+    syncCaptionRevealOffsets();
+    dismissCaptions();
 
-    if (currentPair.from === nextPair.from && currentPair.to === nextPair.to) return;
+    if (captionSceneRef.current !== nextScene) {
+      captionSceneRef.current = nextScene;
+      setCaptionScene(nextScene);
+    }
 
-    captionPairRef.current = nextPair;
-    setCaptionPair(nextPair);
+    restartCaptionRevealTimer();
   };
 
-  const renderCaptionScene = (scene: HomeSlide, slot: "from" | "to") => {
+  const renderCaptionScene = (scene: HomeSlide, slot: "show" | "exit") => {
     const slotPalette = getCaptionPalette(scene);
     const slotGradientId = `${captionFilterId}-${slot}-caption-gradient`;
     const slotGlowId = `${captionFilterId}-${slot}-caption-soft-glow`;
@@ -1082,20 +1164,6 @@ export function HeroScrollVideoSection() {
               </linearGradient>
             </defs>
             <text
-              className="flor-video-caption-line flor-video-caption-line-glow"
-              x="600"
-              y="88"
-              textAnchor="middle"
-              dominantBaseline="middle"
-              fontSize={slotFontSize}
-              letterSpacing={slotLetterSpacing}
-              fill="none"
-              stroke={`url(#${slotGradientId})`}
-              filter={`url(#${slotGlowId})`}
-            >
-              {scene.heading}
-            </text>
-            <text
               className="flor-video-caption-line flor-video-caption-line-main"
               x="600"
               y="88"
@@ -1103,8 +1171,8 @@ export function HeroScrollVideoSection() {
               dominantBaseline="middle"
               fontSize={slotFontSize}
               letterSpacing={slotLetterSpacing}
-              fill="none"
-              stroke={`url(#${slotGradientId})`}
+              fill={`url(#${slotGradientId})`}
+              stroke="none"
             >
               {scene.heading}
             </text>
@@ -1122,7 +1190,12 @@ export function HeroScrollVideoSection() {
     );
   };
 
-  useEffect(() => routeManagerPlus.init(), []);
+  useEffect(() => {
+    // Pick the per-device video resolution before any clip is requested so all
+    // downstream src reads/comparisons stay consistent (slides hold one URL).
+    applyHeroVideoQuality();
+    return routeManagerPlus.init();
+  }, []);
 
   useEffect(() => {
     void import("./cenas-grid");
@@ -1166,13 +1239,6 @@ export function HeroScrollVideoSection() {
     }
   };
 
-  type ShaderTextureSource = {
-    texture: THREE.Texture;
-    width: number;
-    height: number;
-    dispose: () => void;
-  };
-
   const configureShaderTexture = <T extends THREE.Texture>(
     texture: T,
     markNeedsUpdate = true
@@ -1186,16 +1252,6 @@ export function HeroScrollVideoSection() {
       texture.needsUpdate = true;
     }
     return texture;
-  };
-
-  const createImageElementTexture = (image: HTMLImageElement): ShaderTextureSource => {
-    const texture = configureShaderTexture(new THREE.Texture(image));
-    return {
-      texture,
-      width: image.naturalWidth || image.width || 1920,
-      height: image.naturalHeight || image.height || 1080,
-      dispose: () => texture.dispose()
-    };
   };
 
   const requestVideoFrameOnce = (video: HTMLVideoElement, callback: () => void) => {
@@ -1218,6 +1274,30 @@ export function HeroScrollVideoSection() {
     video.readyState >= 2 &&
     video.videoWidth > 0 &&
     video.videoHeight > 0;
+
+  const hasRenderableTextureImage = (texture: THREE.Texture) => {
+    const image = texture.image as
+      | HTMLImageElement
+      | HTMLVideoElement
+      | HTMLCanvasElement
+      | undefined;
+
+    if (!image) return false;
+
+    if (image instanceof HTMLVideoElement) {
+      return hasRenderableVideoFrame(image);
+    }
+
+    if (image instanceof HTMLImageElement) {
+      return image.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
+    }
+
+    if (image instanceof HTMLCanvasElement) {
+      return image.width > 1 && image.height > 1;
+    }
+
+    return false;
+  };
 
   const scheduleRenderableVideoFrame = (
     video: HTMLVideoElement,
@@ -1252,75 +1332,29 @@ export function HeroScrollVideoSection() {
     requestFrame();
   };
 
-  const loadImageTexture = async (src: string): Promise<ShaderTextureSource> => {
-    const texture = configureShaderTexture(await new THREE.TextureLoader().loadAsync(src));
-    const image = texture.image as HTMLImageElement | undefined;
-
-    return {
-      texture,
-      width: image?.naturalWidth || image?.width || 1920,
-      height: image?.naturalHeight || image?.height || 1080,
-      dispose: () => texture.dispose()
-    };
-  };
-
-  const createVideoTexture = (video: HTMLVideoElement): ShaderTextureSource => {
-    const texture = configureShaderTexture(new THREE.VideoTexture(video), false);
-    return {
-      texture,
-      width: video.videoWidth || 1920,
-      height: video.videoHeight || 1080,
-      dispose: () => texture.dispose()
-    };
-  };
-
-  const waitForVideoFrame = (video: HTMLVideoElement) => {
-    if (hasRenderableVideoFrame(video)) return Promise.resolve();
-
-    return new Promise<void>((resolve) => {
-      let resolved = false;
-      let timeout = 0;
-
-      let requestFrame = () => undefined;
-      const done = (ready = false) => {
-        if (resolved) return;
-
-        resolved = true;
-        window.clearTimeout(timeout);
-        video.removeEventListener("loadedmetadata", requestFrame);
-        video.removeEventListener("loadeddata", requestFrame);
-        video.removeEventListener("canplay", requestFrame);
-        if (ready && video.videoWidth > 0 && video.videoHeight > 0) {
-          video.dataset.frameReady = "1";
-        }
-        resolve();
-      };
-
-      requestFrame = () => {
-        if (video.videoWidth <= 0 || video.videoHeight <= 0 || video.readyState < 2) {
-          return;
-        }
-
-        if (!requestVideoFrameOnce(video, () => done(true))) {
-          done(true);
-        }
-      };
-
-      timeout = window.setTimeout(() => done(false), 1200);
-      video.addEventListener("loadedmetadata", requestFrame, { once: true });
-      video.addEventListener("loadeddata", requestFrame, { once: true });
-      video.addEventListener("canplay", requestFrame, { once: true });
-      requestFrame();
-    });
-  };
-
   const setPosterOverlayVisible = (visible: boolean, src?: string) => {
     const poster = posterOverlayRef.current;
     if (!poster) return;
 
     if (src && poster.dataset.posterSrc !== src) {
-      poster.dataset.posterSrc = src;
-      poster.src = src;
+      const hasCurrentPoster = poster.complete && poster.naturalWidth > 0;
+
+      if (!hasCurrentPoster) {
+        poster.dataset.posterSrc = src;
+        poster.src = src;
+      } else if (poster.dataset.pendingPosterSrc !== src) {
+        poster.dataset.pendingPosterSrc = src;
+        const nextPoster = new Image();
+        nextPoster.decoding = "async";
+        nextPoster.onload = () => {
+          if (poster.dataset.pendingPosterSrc !== src) return;
+
+          poster.dataset.posterSrc = src;
+          poster.src = src;
+          delete poster.dataset.pendingPosterSrc;
+        };
+        nextPoster.src = src;
+      }
     }
 
     const nextOpacity = visible ? "1" : "0";
@@ -1344,301 +1378,6 @@ export function HeroScrollVideoSection() {
     video.style.visibility = "visible";
     video.style.pointerEvents = "none";
     video.style.willChange = "auto";
-  };
-
-  const revealCurrentVideo = () => {
-    const currentVideo = currentVideoRef.current;
-    if (!currentVideo) return;
-
-    setPosterOverlayVisible(false);
-    gsap.set(frameRef.current, { opacity: 0 });
-    showHeroVideoLayer(currentVideo);
-    gsap.set(currentVideo, {
-      opacity: 1,
-      scale: 1,
-      filter: "blur(0px)",
-      clipPath: "inset(0%)"
-    });
-    gsap.to(transitionCanvasRef.current, {
-      opacity: 0,
-      duration: 0.16,
-      ease: "power1.out"
-    });
-  };
-
-  const createCurrentShaderTexture = async (fromSlide: HomeSlide): Promise<ShaderTextureSource> => {
-    const frame = frameRef.current;
-    const currentVideo = currentVideoRef.current;
-
-    if (
-      fromSlide.kind === "work" &&
-      fromSlide.src &&
-      currentVideo &&
-      currentVideoSrcRef.current === fromSlide.src &&
-      hasRenderableVideoFrame(currentVideo)
-    ) {
-      return createVideoTexture(currentVideo);
-    }
-
-    if (fromSlide.kind === "work" && fromSlide.poster) {
-      return loadImageTexture(fromSlide.poster);
-    }
-
-    if (frame?.complete && frame.naturalWidth > 0) {
-      return createImageElementTexture(frame);
-    }
-
-    return loadImageTexture(heroFrameSrc(currentFrameIndexRef.current));
-  };
-
-  const createTargetShaderTexture = async (
-    targetSlide: HomeSlide,
-    token: number
-  ): Promise<ShaderTextureSource> => {
-    const incomingVideo = incomingVideoRef.current;
-
-    if (targetSlide.kind === "work" && targetSlide.src && incomingVideo) {
-      hideHeroVideoLayer(incomingVideo);
-      incomingVideo.src = targetSlide.src;
-      incomingVideo.dataset.src = targetSlide.src;
-      incomingVideo.dataset.frameReady = "0";
-      incomingVideo.poster = targetSlide.poster;
-      incomingVideo.currentTime = 0;
-      incomingVideo.load();
-      incomingVideo.play().catch(() => undefined);
-      await waitForVideoFrame(incomingVideo);
-
-      if (token !== transitionTokenRef.current) {
-        throw new Error("transition-cancelled");
-      }
-
-      if (hasRenderableVideoFrame(incomingVideo)) {
-        return createVideoTexture(incomingVideo);
-      }
-    }
-
-    return loadImageTexture(targetSlide.poster || heroFrameSrc(currentFrameIndexRef.current));
-  };
-
-  const finishDomToSlide = (targetSlide: HomeSlide) => {
-    const frame = frameRef.current;
-    const currentVideo = currentVideoRef.current;
-    const incomingVideo = incomingVideoRef.current;
-    const nextSrc = sourceForSlide(targetSlide);
-
-    if (targetSlide.kind === "opening") {
-      currentVideoSrcRef.current = "";
-      currentVideoTextureRef.current?.texture.dispose();
-      currentVideoTextureRef.current = null;
-      currentVideo?.pause();
-      incomingVideo?.pause();
-      if (currentVideo) currentVideo.dataset.frameReady = "0";
-      if (incomingVideo) incomingVideo.dataset.frameReady = "0";
-      hideHeroVideoLayer(currentVideo);
-      hideHeroVideoLayer(incomingVideo);
-      setPosterOverlayVisible(false);
-      if (frame) {
-        gsap.set(frame, {
-          opacity: 1,
-          scale: 1,
-          filter: "blur(0px)",
-          clipPath: "inset(0%)"
-        });
-      }
-      return;
-    }
-
-    if (!currentVideo || !incomingVideo) return;
-
-    if (nextSrc) {
-      const nextTime = Number.isFinite(incomingVideo.currentTime) ? incomingVideo.currentTime : 0;
-
-      currentVideoTextureRef.current?.texture.dispose();
-      currentVideoTextureRef.current = null;
-      currentVideo.src = nextSrc;
-      currentVideo.dataset.src = nextSrc;
-      currentVideo.dataset.frameReady = "0";
-      currentVideo.poster = targetSlide.poster;
-      currentVideo.load();
-      try {
-        currentVideo.currentTime = nextTime;
-      } catch {
-        // Some browsers reject seeking before metadata is ready; playback still starts at the first frame.
-      }
-      currentVideo.play().catch(() => undefined);
-      scheduleRenderableVideoFrame(currentVideo, nextSrc);
-      currentVideoSrcRef.current = nextSrc;
-      gsap.set(frame, { opacity: 0 });
-      setPosterOverlayVisible(false);
-      showHeroVideoLayer(currentVideo);
-      gsap.set(currentVideo, { opacity: 1, scale: 1, filter: "blur(0px)", clipPath: "inset(0%)" });
-      hideHeroVideoLayer(incomingVideo);
-      gsap.set(incomingVideo, { scale: 1, filter: "blur(0px)", clipPath: "inset(0%)" });
-      incomingVideo.pause();
-      incomingVideo.dataset.frameReady = "0";
-      incomingVideo.removeAttribute("src");
-      incomingVideo.load();
-      return;
-    }
-
-    currentVideoSrcRef.current = "";
-    currentVideoTextureRef.current?.texture.dispose();
-    currentVideoTextureRef.current = null;
-    currentVideo.pause();
-    currentVideo.dataset.frameReady = "0";
-    currentVideo.removeAttribute("src");
-    currentVideo.load();
-    incomingVideo.pause();
-    incomingVideo.dataset.frameReady = "0";
-    incomingVideo.removeAttribute("src");
-    incomingVideo.load();
-    gsap.set(frame, { opacity: 0 });
-    hideHeroVideoLayer(currentVideo);
-    hideHeroVideoLayer(incomingVideo);
-  };
-
-  const runVideoTransition = (targetScene: number, skipAnimation = false, fromScene = activeSceneRef.current) => {
-    const targetSlide = homeSlides[targetScene] ?? openingSlide;
-    const fromSlide = homeSlides[fromScene] ?? openingSlide;
-    const canvas = transitionCanvasRef.current;
-
-    transitionTweenRef.current?.kill();
-    transitionRenderCleanupRef.current?.();
-    transitionRenderCleanupRef.current = null;
-    const token = ++transitionTokenRef.current;
-
-    if (targetSlide.kind === "opening" || skipAnimation || fromScene === targetScene || !canvas) {
-      finishDomToSlide(targetSlide);
-      return;
-    }
-
-    const nextSrc = sourceForSlide(targetSlide);
-    if (nextSrc && currentVideoSrcRef.current === nextSrc) {
-      currentVideoRef.current?.play().catch(() => undefined);
-      return;
-    }
-
-    void (async () => {
-      let sourceTexture: ShaderTextureSource | null = null;
-      let targetTexture: ShaderTextureSource | null = null;
-
-      try {
-        sourceTexture = await createCurrentShaderTexture(fromSlide);
-        targetTexture = await createTargetShaderTexture(targetSlide, token);
-      } catch {
-        sourceTexture?.dispose();
-        targetTexture?.dispose();
-        if (token === transitionTokenRef.current) finishDomToSlide(targetSlide);
-        return;
-      }
-
-      if (token !== transitionTokenRef.current) {
-        sourceTexture.dispose();
-        targetTexture.dispose();
-        return;
-      }
-
-      const pixelRatio = getShaderPixelRatio();
-      const width = Math.max(1, window.innerWidth || canvas.clientWidth);
-      const height = Math.max(1, window.innerHeight || canvas.clientHeight);
-      const renderer = new THREE.WebGLRenderer({
-        canvas,
-        antialias: false,
-        alpha: true,
-        premultipliedAlpha: false
-      });
-      renderer.outputColorSpace = THREE.SRGBColorSpace;
-      renderer.setPixelRatio(pixelRatio);
-      renderer.setSize(width, height, false);
-
-      const scene = new THREE.Scene();
-      const camera = new THREE.OrthographicCamera(
-        width / -2,
-        width / 2,
-        height / 2,
-        height / -2,
-        -1000,
-        1000
-      );
-      camera.position.z = 1;
-
-      const geometry = new THREE.PlaneGeometry(width, height, 1, 1);
-      const uniforms = {
-        texture1: { value: sourceTexture.texture },
-        texture2: { value: targetTexture.texture },
-        uvRate1: {
-          value: coverUvRate(sourceTexture.width, sourceTexture.height, width, height)
-        },
-        uvRate2: {
-          value: coverUvRate(targetTexture.width, targetTexture.height, width, height)
-        },
-        progress: { value: 0 },
-        mask: { value: new THREE.Vector3(1, 1, 0) },
-        translateDelay: { value: new THREE.Vector4(-0.5, 1, 1, 2) },
-        accel: { value: new THREE.Vector2(0.5, 2) },
-        waveAmpFreq: { value: new THREE.Vector4(0, 0.5, 0, 4) },
-        waveSpeedBlend: { value: new THREE.Vector4(0, 0.3, 0.5, 0.5) },
-        pixels: { value: new THREE.Vector4(width * pixelRatio, height * pixelRatio, 1, 1) },
-        velocity: { value: 0 },
-        direction: { value: 1 },
-        time: { value: new THREE.Vector4(0, 0, 0, 0) }
-      };
-      const material = new THREE.RawShaderMaterial({
-        uniforms,
-        vertexShader: taoVideoSlideVertexShader,
-        fragmentShader: taoVideoSlideFragmentShader,
-        transparent: true,
-        depthTest: false,
-        depthWrite: false
-      });
-      const mesh = new THREE.Mesh(geometry, material);
-      scene.add(mesh);
-
-      let raf = 0;
-      const startedAt = performance.now();
-      const render = () => {
-        uniforms.time.value.y = (performance.now() - startedAt) / 1000;
-        renderer.render(scene, camera);
-        raf = window.requestAnimationFrame(render);
-      };
-
-      transitionRenderCleanupRef.current = () => {
-        window.cancelAnimationFrame(raf);
-        transitionTweenRef.current?.kill();
-        renderer.dispose();
-        geometry.dispose();
-        material.dispose();
-        sourceTexture?.dispose();
-        targetTexture?.dispose();
-        gsap.set(canvas, { opacity: 0 });
-      };
-
-      gsap.set(canvas, { opacity: 1 });
-      gsap.set(frameRef.current, { opacity: 0 });
-      render();
-
-      transitionTweenRef.current = gsap.to(uniforms.progress, {
-        value: 1,
-        duration: worksThreeSlideTiming.shaderMs / 1000,
-        ease: "power3.inOut",
-        onComplete: () => {
-          if (token !== transitionTokenRef.current) return;
-
-          finishDomToSlide(targetSlide);
-          gsap.to(canvas, {
-            opacity: 0,
-            duration: 0.12,
-            ease: "power1.out",
-            onComplete: () => {
-              if (token !== transitionTokenRef.current) return;
-
-              transitionRenderCleanupRef.current?.();
-              transitionRenderCleanupRef.current = null;
-            }
-          });
-        }
-      });
-    })();
   };
 
   const createPosterTextureSlot = (src: string): SlideTextureSlot | null => {
@@ -1929,11 +1668,25 @@ export function HeroScrollVideoSection() {
     const desiredQueue = ordered.filter(
       (index) => slidePreviewEntriesRef.current.get(index)?.state === "queued"
     );
+    // Tao's _unsetTextures: every player outside the active pair pauses. We keep
+    // prev/current/next warm and additionally FREE entries further than one slot
+    // beyond that window — without this, a full loop around the 20 works left 20
+    // buffered <video> elements + their GPU textures alive (slow VRAM/memory
+    // creep that reads as progressive stutter).
+    const staleIndices: number[] = [];
     slidePreviewEntriesRef.current.forEach((entry, index) => {
-      if (!slidePreviewDesiredRef.current.has(index) && !entry.video.paused) {
+      if (slidePreviewDesiredRef.current.has(index)) return;
+
+      if (!entry.video.paused) {
         entry.video.pause();
       }
+
+      const distance = Math.abs(index - currentIndex);
+      if (Math.min(distance, total - distance) > 2) {
+        staleIndices.push(index);
+      }
     });
+    staleIndices.forEach(disposeSlidePreviewEntry);
     slidePreviewQueueRef.current = desiredQueue;
 
     scheduleSlidePreviewFlush();
@@ -1949,6 +1702,19 @@ export function HeroScrollVideoSection() {
     const canUseCurrentVideo = (workIndex: number) => {
       const slide = homeSlides[workIndex + 1];
       const currentVideo = currentVideoRef.current;
+
+      // The borrowed grid element (works->slide bridge) already plays this work
+      // into the canvas — decoding our preview of the same clip in parallel just
+      // burns GPU.
+      const shared = sharedSlideVideoRef.current;
+      if (
+        shared &&
+        shared.index === workIndex &&
+        !shared.video.paused &&
+        shared.video.readyState >= 2
+      ) {
+        return true;
+      }
 
       return Boolean(
         slide?.kind === "work" &&
@@ -1991,6 +1757,43 @@ export function HeroScrollVideoSection() {
 
   const createSlotFromSlide = (slide: HomeSlide, workIndex: number): SlideTextureSlot | null => {
     const currentVideo = currentVideoRef.current;
+
+    // Video bridge: while this work was just opened from the grid, render the very
+    // <video> element the grid zoomed so the frame is identical across the
+    // handoff. The release (swap to our own preview) is decided by the handoff
+    // monitor in selectWorkFromWorks, which first time-syncs the preview to this
+    // element so the swap lands on the same frame and is invisible.
+    const shared = sharedSlideVideoRef.current;
+    if (shared && shared.index === workIndex && slide.kind === "work") {
+      const sv = shared.video;
+      const sharedRenderable = sv.readyState >= 2 && sv.videoWidth > 0 && sv.videoHeight > 0;
+
+      if (sharedRenderable) {
+        // CRITICAL: the render loop's poster fallback gates the canvas on
+        // hasRenderableVideoFrame(), which requires dataset.frameReady === "1" —
+        // a hero-only convention the grid's element never gets. Without this flag
+        // the loop forces the canvas to opacity 0 and shows the poster THUMB,
+        // hiding the whole bridge (and the swap back reads as a screen change).
+        // The element played on screen through the zoom, so it provably has frames.
+        if (sv.dataset.frameReady !== "1") {
+          sv.dataset.frameReady = "1";
+        }
+        if (!sharedSlideTextureRef.current || sharedSlideTextureRef.current.video !== sv) {
+          sharedSlideTextureRef.current?.texture.dispose();
+          const texture = configureShaderTexture(new THREE.VideoTexture(sv), false);
+          texture.generateMipmaps = false;
+          sharedSlideTextureRef.current = { video: sv, texture };
+        }
+        return {
+          image: sv,
+          width: sv.videoWidth || 1920,
+          height: sv.videoHeight || 1080,
+          texture: sharedSlideTextureRef.current.texture
+        };
+      }
+      // Not renderable (clicked without hover / clip not loaded) — fall through to
+      // the preview/poster paths below.
+    }
 
     if (
       slide.kind === "work" &&
@@ -2050,6 +1853,14 @@ export function HeroScrollVideoSection() {
     const height = Math.max(1, window.innerHeight || canvas.clientHeight || 1);
     const pixelRatio = getShaderPixelRatio();
 
+    if (
+      runtime.width === width &&
+      runtime.height === height &&
+      runtime.pixelRatio === pixelRatio
+    ) {
+      return;
+    }
+
     runtime.width = width;
     runtime.height = height;
     runtime.pixelRatio = pixelRatio;
@@ -2064,6 +1875,8 @@ export function HeroScrollVideoSection() {
     runtime.geometry = new THREE.PlaneGeometry(width, height, 1, 1);
     runtime.mesh.geometry = runtime.geometry;
     runtime.uniforms.pixels.value.set(width * pixelRatio, height * pixelRatio, 1, 1);
+    runtime.pairKey = "";
+    runtime.hasRendered = false;
   };
 
   const initSlideShaderRuntime = () => {
@@ -2132,7 +1945,8 @@ export function HeroScrollVideoSection() {
       lastVelocity: Number.NaN,
       lastDirection: Number.NaN,
       lastTexture1Version: -1,
-      lastTexture2Version: -1
+      lastTexture2Version: -1,
+      hasRendered: false
     };
 
     resizeSlideShaderRuntime();
@@ -2149,10 +1963,19 @@ export function HeroScrollVideoSection() {
     const baseSlide = homeSlides[baseWorkIndex + 1] ?? homeSlides[1] ?? openingSlide;
     const nextSlide = homeSlides[nextWorkIndex + 1] ?? homeSlides[1] ?? openingSlide;
     const texture1 = createSlotFromSlide(baseSlide, baseWorkIndex);
-    const texture2 = createSlotFromSlide(nextSlide, nextWorkIndex);
+    let texture2 = createSlotFromSlide(nextSlide, nextWorkIndex);
 
-    if (!texture1 || !texture2) {
+    // The current slide (texture1) must exist. The NEXT slide may not be decoded
+    // yet (e.g. right after a works->video jump). At settle the shader only shows
+    // texture1, so fall back to it for texture2 instead of failing the whole pair
+    // — failing leaves the canvas with no renderable pair and it goes BLACK during
+    // the handoff. The pair rebuilds with the real next clip once it's ready / the
+    // user scrolls toward it.
+    if (!texture1) {
       return false;
+    }
+    if (!texture2) {
+      texture2 = texture1;
     }
 
     const bindSlotTexture = (slot: SlideTextureSlot, imageTexture: THREE.Texture) => {
@@ -2185,6 +2008,7 @@ export function HeroScrollVideoSection() {
     runtime.lastDirection = Number.NaN;
     runtime.lastTexture1Version = -1;
     runtime.lastTexture2Version = -1;
+    runtime.hasRendered = false;
     return true;
   };
 
@@ -2210,8 +2034,23 @@ export function HeroScrollVideoSection() {
       progress > 0.001 &&
       progress < 0.999 &&
       (normalizedVelocity > 0.002 || shaderStateChanged);
+    // Tao Tajima renders the canvas every frame while a video texture is bound, so
+    // the quad always re-draws the last valid frame. Skipping renders (our gate
+    // below) risks a cleared/black frame at the exact moment a clip loops back to
+    // its start — the same black-frame artifact seen in transitions. Keep drawing
+    // whenever a live <video> feeds either slot to hold the last frame across the
+    // loop seek. Cost is one fullscreen quad; the decode load is unchanged.
+    const hasLiveVideoTexture =
+      runtime.texture1.image instanceof HTMLVideoElement ||
+      runtime.texture2.image instanceof HTMLVideoElement;
 
-    if (!shaderStateChanged && !videoFrameChanged && !transitionIsAlive) {
+    if (
+      runtime.hasRendered &&
+      !shaderStateChanged &&
+      !videoFrameChanged &&
+      !transitionIsAlive &&
+      !hasLiveVideoTexture
+    ) {
       return;
     }
 
@@ -2225,11 +2064,18 @@ export function HeroScrollVideoSection() {
     runtime.lastDirection = normalizedDirection;
     runtime.lastTexture1Version = runtime.texture1.version;
     runtime.lastTexture2Version = runtime.texture2.version;
+    runtime.hasRendered = true;
   };
 
   const hasRenderableSlideShaderPair = () => {
     const runtime = slideShaderRef.current;
-    return Boolean(runtime?.pairKey);
+    return Boolean(
+      runtime?.pairKey &&
+        runtime.hasRendered &&
+        Number.isFinite(runtime.lastProgress) &&
+        hasRenderableTextureImage(runtime.texture1) &&
+        hasRenderableTextureImage(runtime.texture2)
+    );
   };
 
   const scheduleRouteForScene = (sceneIndex: number) => {
@@ -2245,7 +2091,7 @@ export function HeroScrollVideoSection() {
   const commitActiveScene = (sceneIndex: number, immediateRoute = false) => {
     if (activeSceneRef.current === sceneIndex) return;
 
-    suppressSceneCaptions(CAPTION_CHANGE_SUPPRESS_MS);
+    hideCaptionsForSceneChange(sceneIndex);
     activeSceneRef.current = sceneIndex;
     setActiveScene(sceneIndex);
 
@@ -2280,6 +2126,10 @@ export function HeroScrollVideoSection() {
 
     clearWorksTimingTimers();
     removeCardOverlay();
+    if (sharedSlideVideoRef.current) {
+      sharedSlideVideoRef.current.video.pause();
+      sharedSlideVideoRef.current = null;
+    }
     returnSceneRef.current = activeSceneRef.current;
     setTransitionWorkIndex(clamp(Math.max(1, activeSceneRef.current) - 1, 0, WORKS.length - 1));
     setShouldMountWorks(true);
@@ -2309,7 +2159,7 @@ export function HeroScrollVideoSection() {
 
     scheduleWorksFromClick(() => {
       setWorksEntryKey((key) => key + 1);
-    }, worksThreeSlideTiming.cardsMs);
+    }, WORKS_ENTRY_CARDS_MS);
   };
 
   const closeWorks = () => {
@@ -2349,36 +2199,14 @@ export function HeroScrollVideoSection() {
     if (setSlideShaderPair(targetWorkIndex, modulo(targetWorkIndex + 1, WORKS.length))) {
       renderSlideShader(0, performance.now() / 1000);
       gsap.set(transitionCanvasRef.current, { opacity: 1 });
+      setPosterOverlayVisible(false);
+    } else {
+      gsap.set(transitionCanvasRef.current, { opacity: 0 });
+      setPosterOverlayVisible(true, targetSlide.poster);
     }
   };
 
-  const warmCurrentWorkVideo = async (workIndex: number, reveal: boolean) => {
-    const targetWorkIndex = clamp(workIndex, 0, WORKS.length - 1);
-    const targetScene = targetWorkIndex + 1;
-    const targetSlide = homeSlides[targetScene] ?? homeSlides[1] ?? openingSlide;
-    const currentVideo = currentVideoRef.current;
-    const nextSrc = sourceForSlide(targetSlide);
-
-    if (!currentVideo || !nextSrc) {
-      return false;
-    }
-
-    setVideoElementSource(currentVideo, targetSlide, "current");
-    currentVideoSrcRef.current = nextSrc;
-    await waitForVideoFrame(currentVideo);
-
-    const ready =
-      currentVideo.dataset.src === nextSrc &&
-      hasRenderableVideoFrame(currentVideo);
-
-    if (ready && reveal) {
-      revealCurrentVideo();
-    }
-
-    return ready;
-  };
-
-  const selectWorkFromWorks = (workIndex: number) => {
+  const selectWorkFromWorks = (workIndex: number, sharedVideo?: HTMLVideoElement | null) => {
     const targetWorkIndex = clamp(workIndex, 0, WORKS.length - 1);
     const targetScene = targetWorkIndex + 1;
 
@@ -2395,39 +2223,141 @@ export function HeroScrollVideoSection() {
     syncSlidePosterRange(targetWorkIndex);
     requestSlidePreviewRange(targetWorkIndex);
 
-    const videoReadyPromise = warmCurrentWorkVideo(targetWorkIndex, false);
+    // Bind the grid's just-zoomed <video> as the slide texture for a seamless
+    // handoff (identical frames). createSlotFromSlide releases it once our own
+    // preview for this work is ready.
+    sharedSlideVideoRef.current = sharedVideo
+      ? { index: targetWorkIndex, video: sharedVideo }
+      : null;
 
-    const pairReady = setSlideShaderPair(targetWorkIndex, modulo(targetWorkIndex + 1, WORKS.length));
-    if (pairReady) {
-      renderSlideShader(0, performance.now() / 1000);
-      gsap.set(transitionCanvasRef.current, { opacity: 1 });
-      setPosterOverlayVisible(false);
-    } else {
-      gsap.set(transitionCanvasRef.current, { opacity: 0 });
-      setPosterOverlayVisible(true);
-    }
-
+    // Tao shares ONE video player per work between the grid card and the slide
+    // (VideoPlayer.list[index]) — clicking never reloads. We mirror that by driving
+    // the slide from the hero's preview pool (same clips, warmed on card hover)
+    // instead of reloading a separate currentVideo. The <video> element stays
+    // hidden/paused; createSlotFromSlide binds the preview VideoTexture, and the
+    // pair falls back to texture1 when the next clip isn't ready, so the canvas
+    // never blanks to black.
     hideHeroVideoLayer(currentVideoRef.current);
+    currentVideoRef.current?.pause();
+    currentVideoSrcRef.current = "";
+
+    const renderTargetPair = () => {
+      const runtime = slideShaderRef.current;
+      if (runtime) {
+        runtime.pairKey = "";
+      }
+      if (setSlideShaderPair(targetWorkIndex, modulo(targetWorkIndex + 1, WORKS.length))) {
+        renderSlideShader(0, performance.now() / 1000);
+        gsap.set(transitionCanvasRef.current, { opacity: 1 });
+        setPosterOverlayVisible(false);
+        return true;
+      }
+      gsap.set(transitionCanvasRef.current, { opacity: 0 });
+      setPosterOverlayVisible(true, homeSlides[targetScene]?.poster);
+      return false;
+    };
+
+    renderTargetPair();
 
     commitActiveScene(targetScene, true);
+    // Tao reveals the slide captions ~0.7s AFTER the slide lands (delay(.7) ->
+    // isSlideText in his main.js). Entering on a stable video first and then
+    // drawing the captions in separates the two events — without this, video
+    // takeover + caption pop landed on the same frame and read as a screen swap.
+    // Runs unconditionally: commitActiveScene skips the cycle when re-selecting
+    // the work that was already active.
+    hideCaptionsForSceneChange(targetScene);
     setIsListView(false);
     setIsZoomingWorks(false);
     setIsWorksView(false);
-    gsap.set(worksLayerRef.current, { autoAlpha: 0, pointerEvents: "none" });
-    worksLayerRef.current?.scrollTo({ top: 0 });
     window.scrollTo({ top: 0, left: 0, behavior: "instant" as ScrollBehavior });
 
-    window.setTimeout(() => {
-      dissolveCard(360);
-    }, 80);
+    // Hide the works layer only after the hero canvas frame (just rendered above)
+    // has actually been PRESENTED — hiding it in the same task produced a 1-frame
+    // black gap on screencast (works layer gone before the canvas composited).
+    // During these 2 frames the grid keeps its final zoom frame, which now matches
+    // the hero frame exactly (same video element, same scale, full brightness).
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        gsap.set(worksLayerRef.current, { autoAlpha: 0, pointerEvents: "none" });
+        worksLayerRef.current?.scrollTo({ top: 0 });
+      });
+    });
 
-    videoReadyPromise.then((videoReady) => {
-      if (!videoReady || activeSceneRef.current !== targetScene) {
+    const getReadyPreviewVideo = () => {
+      const entry = slidePreviewEntriesRef.current.get(targetWorkIndex);
+      return entry?.state === "ready" && hasRenderableVideoFrame(entry.video)
+        ? entry.video
+        : null;
+    };
+
+    const sharedIsRenderable = () => {
+      const shared = sharedSlideVideoRef.current;
+      const sv = shared?.index === targetWorkIndex ? shared.video : null;
+      return Boolean(
+        sv && sv.readyState >= 2 && sv.videoWidth > 0 && sv.videoHeight > 0 && !sv.paused
+      );
+    };
+
+    const handToPreview = () => {
+      sharedSlideVideoRef.current = null;
+      const runtime = slideShaderRef.current;
+      if (runtime) {
+        runtime.pairKey = "";
+      }
+    };
+
+    // NO swap while the slide is on screen. The borrowed grid element IS the slide
+    // texture for as long as the user stays on this work — exactly Tao's shared
+    // VideoPlayer (one element per work for both list and slide). Any mid-settle
+    // texture swap to our preview produced a visible time-jump (captured on
+    // screencast: the clip jumped ~0.2s when the swap landed). Release + pause
+    // only when the user leaves the slide; if the element somehow stops, fall
+    // back to the preview then (a transition will cover that rebuild).
+    const monitorHandoff = () => {
+      const shared = sharedSlideVideoRef.current;
+      if (!shared || shared.index !== targetWorkIndex) {
         return;
       }
 
-      revealCurrentVideo();
-    });
+      if (activeSceneRef.current !== targetScene) {
+        shared.video.pause();
+        handToPreview();
+        return;
+      }
+
+      if (shared.video.paused || shared.video.ended) {
+        handToPreview();
+        return;
+      }
+
+      window.requestAnimationFrame(monitorHandoff);
+    };
+
+    // Phase 1 — reveal: dissolve the card overlay as soon as the canvas is painting
+    // something MOVING (the borrowed grid video, or our preview). Short fallback so
+    // the card never sticks.
+    const revealStartedAt = performance.now();
+    const revealWhenReady = () => {
+      if (activeSceneRef.current !== targetScene) {
+        return;
+      }
+
+      if (
+        sharedIsRenderable() ||
+        getReadyPreviewVideo() ||
+        performance.now() - revealStartedAt >= 1200
+      ) {
+        renderTargetPair();
+        dissolveCard(360);
+        monitorHandoff();
+        return;
+      }
+
+      window.requestAnimationFrame(revealWhenReady);
+    };
+
+    revealWhenReady();
   };
 
   const completeWorksZoom = () => {
@@ -2437,6 +2367,10 @@ export function HeroScrollVideoSection() {
     if (zoomDirection === "close") {
       setIsWorksView(false);
       setRouteForScene(returnSceneRef.current);
+      // Back on the slide: reveal its caption on the same 0.7s debounce as any
+      // other landing (isWorksActiveRef flips before the timer fires).
+      syncCaptionRevealOffsets();
+      restartCaptionRevealTimer();
     }
   };
 
@@ -2478,6 +2412,9 @@ export function HeroScrollVideoSection() {
     activeSceneRef.current = startInOpening ? 0 : initialWorkScene;
     setOpeningAvailable(startInOpening);
     setActiveScene(startInOpening ? 0 : initialWorkScene);
+    captionSceneRef.current = activeSceneRef.current;
+    setCaptionScene(activeSceneRef.current);
+    syncCaptionRevealOffsets();
 
     try {
       window.localStorage.setItem(OPENING_SEEN_KEY, "1");
@@ -2542,7 +2479,7 @@ export function HeroScrollVideoSection() {
 
       const progress = clamp(openingProgressRef.current, 0, 1);
       if (progress > 0.035) {
-        hideSceneCaptions();
+        dismissCaptions();
       }
       setFrame(1 + smoothStep(0, 0.88, progress) * (HERO_FRAME_COUNT - 1));
       gsap.set(frame, {
@@ -2661,8 +2598,6 @@ export function HeroScrollVideoSection() {
       const baseWorkIndex = Math.floor(wrapped);
       const nextWorkIndex = modulo(baseWorkIndex + 1, WORKS.length);
       const rawTransition = wrapped - baseWorkIndex;
-      const nearestWorkIndex = modulo(Math.round(wrapped), WORKS.length);
-      const distanceToNearestSlide = Math.min(rawTransition, 1 - rawTransition);
       const visualTransition = rawTransition;
       const activeWorkIndex = rawTransition < 0.5 ? baseWorkIndex : nextWorkIndex;
       const activeSlide = homeSlides[activeWorkIndex + 1] ?? homeSlides[1] ?? openingSlide;
@@ -2672,55 +2607,11 @@ export function HeroScrollVideoSection() {
         Math.abs(visualDelta) > 0.00005 ||
         Math.abs(scrollVelocityRef.current) > TAO_SNAP_THRESHOLD ||
         Math.abs(touchImpulseRef.current) > TAO_SNAP_THRESHOLD;
-      setCaptionPairForProgress(baseWorkIndex + 1, nextWorkIndex + 1);
-      const captionLayer = captionLayerRef.current;
-      const captionSpeed =
-        1 -
-        smoothStep(
-          CAPTION_FAST_FADE_START,
-          CAPTION_FAST_FADE_END,
-          Math.abs(visualVelocityRef.current)
-        );
-      if (captionLayer) {
-        const outProgress = smoothStep(CAPTION_OUT_START, CAPTION_OUT_END, rawTransition);
-        const inProgress = smoothStep(CAPTION_IN_START, CAPTION_IN_END, rawTransition);
-        const outFast = smoothStep(0.01, 0.36, rawTransition);
-        const inFast = smoothStep(0.08, 0.58, rawTransition);
-        const direction = scrollDirectionRef.current < 0 ? -1 : 1;
-        const fromOpacity = (1 - outProgress) * captionSpeed;
-        const toOpacity = inProgress * captionSpeed;
-        const fromSubOpacity = (1 - outFast) * captionSpeed;
-        const toSubOpacity = inFast * captionSpeed;
-        const fromX = direction * outProgress * -18;
-        const fromY = outProgress * -26;
-        const toX = direction * (1 - inProgress) * 16;
-        const toY = (1 - inProgress) * 30;
-        const fromReveal = 100 - outProgress * 100;
-        const toReveal = inProgress * 100;
-
-        captionLayer.style.setProperty("--caption-out", outProgress.toFixed(4));
-        captionLayer.style.setProperty("--caption-in", inProgress.toFixed(4));
-        captionLayer.style.setProperty("--caption-out-fast", outFast.toFixed(4));
-        captionLayer.style.setProperty("--caption-in-fast", inFast.toFixed(4));
-        captionLayer.style.setProperty("--caption-speed", captionSpeed.toFixed(4));
-        captionLayer.style.setProperty("--caption-direction", String(direction));
-        captionLayer.style.setProperty("--caption-out-clip", `${(outProgress * 100).toFixed(2)}%`);
-        captionLayer.style.setProperty("--caption-in-clip", `${((1 - inProgress) * 100).toFixed(2)}%`);
-        captionLayer.style.setProperty("--caption-from-reveal", `${fromReveal.toFixed(2)}%`);
-        captionLayer.style.setProperty("--caption-to-reveal", `${toReveal.toFixed(2)}%`);
-        captionLayer.style.setProperty("--caption-from-opacity", fromOpacity.toFixed(4));
-        captionLayer.style.setProperty("--caption-to-opacity", toOpacity.toFixed(4));
-        captionLayer.style.setProperty("--caption-from-sub-opacity", fromSubOpacity.toFixed(4));
-        captionLayer.style.setProperty("--caption-to-sub-opacity", toSubOpacity.toFixed(4));
-        captionLayer.style.setProperty("--caption-from-x", `${fromX.toFixed(2)}px`);
-        captionLayer.style.setProperty("--caption-from-y", `${fromY.toFixed(2)}px`);
-        captionLayer.style.setProperty("--caption-to-x", `${toX.toFixed(2)}px`);
-        captionLayer.style.setProperty("--caption-to-y", `${toY.toFixed(2)}px`);
-        captionLayer.style.setProperty("--caption-from-scale", (1 - outProgress * 0.018).toFixed(4));
-        captionLayer.style.setProperty("--caption-to-scale", (0.986 + inProgress * 0.014).toFixed(4));
-        captionLayer.style.setProperty("--caption-from-blur", `${(outProgress * 8).toFixed(2)}px`);
-        captionLayer.style.setProperty("--caption-to-blur", `${((1 - inProgress) * 9).toFixed(2)}px`);
-      }
+      // Captions are NOT driven by per-frame progress. Tao's rule: they hide when
+      // the slide index changes (midpoint crossing — handled by commitActiveScene
+      // below) and reappear on the 0.7s debounce timer. Mapping caption opacity to
+      // rawTransition here is what made two captions overlap mid-scroll and
+      // strobe near the reveal thresholds.
       requestSlidePreviewRange(activeWorkIndex);
       syncSlidePreviewPlayback(
         baseWorkIndex,
@@ -2738,90 +2629,61 @@ export function HeroScrollVideoSection() {
         );
       }
       const canHoldPreviousPair = hasRenderableSlideShaderPair();
+      const needsPosterFallback =
+        activeSlide.kind === "work" && !canHoldPreviousPair;
+      let needsMediaFallback = needsPosterFallback;
       setLoopOpacity(frame, 0);
-      setLoopOpacity(canvas, canHoldPreviousPair ? 1 : 0);
+      setLoopOpacity(canvas, canHoldPreviousPair && !needsPosterFallback ? 1 : 0);
       if (canHoldPreviousPair) {
+        // Tao Tajima renders every slide — including the settled, playing video —
+        // INSIDE the WebGL canvas and never swaps to a raw DOM <video>. Matching
+        // that removes the perceptible "photo -> video" handoff. At settle the
+        // shader sits at progress 0 = clean cover frame, so the liquid deformation
+        // (only active mid-transition) is untouched and there is no swap to see.
         const currentVideo = currentVideoRef.current;
         const settledOnWork =
           !transitionIsMoving &&
           rawTransition < TAO_SETTLE_EPSILON &&
-          activeSlide.kind === "work" &&
-          Boolean(currentVideo);
-        let isShowingSettledVideo = false;
+          activeSlide.kind === "work";
 
-        if (settledOnWork && currentVideo) {
-          setVideoElementSource(currentVideo, activeSlide, "current");
-          currentVideoSrcRef.current = activeSlide.src;
-          isShowingSettledVideo = hasRenderableVideoFrame(currentVideo);
-
-          if (isShowingSettledVideo) {
-            showHeroVideoLayer(currentVideo);
-            if (settledVideoRevealSrcRef.current !== activeSlide.src) {
-              settledVideoRevealSrcRef.current = activeSlide.src;
-              settledVideoRevealCompleteSrcRef.current = "";
-              gsap.killTweensOf(currentVideo);
-              gsap.set(currentVideo, {
-                opacity: 0,
-                scale: 1,
-                filter: "blur(2px)",
-                clipPath: "inset(0%)",
-                willChange: "opacity, filter"
-              });
-              gsap.to(currentVideo, {
-                opacity: 1,
-                filter: "blur(0px)",
-                duration: 0.34,
-                ease: "power2.out",
-                onComplete: () => {
-                  currentVideo.style.willChange = "auto";
-                  settledVideoRevealCompleteSrcRef.current = activeSlide.src;
-                  setLoopOpacity(canvas, 0);
-                }
-              });
-            } else if (settledVideoRevealCompleteSrcRef.current === activeSlide.src) {
-              setLoopOpacity(canvas, 0);
-            }
-            pauseSlidePreviewPlayback();
+        if (
+          settledOnWork &&
+          currentVideo &&
+          currentVideoSrcRef.current === activeSlide.src &&
+          hasRenderableVideoFrame(currentVideo)
+        ) {
+          // Work opened from the grid: the warmed currentVideo already holds this
+          // exact clip. Keep it PLAYING but visually invisible (opacity 0, still
+          // decoding) so it feeds the canvas VideoTexture — the render stays in
+          // WebGL, with no reload and no poster step. createSlotFromSlide binds
+          // this same <video> because currentVideoSrcRef matches the slide.
+          currentVideo.style.visibility = "visible";
+          currentVideo.style.opacity = "0";
+          currentVideo.style.pointerEvents = "none";
+          if (currentVideo.paused) {
+            currentVideo.play().catch(() => undefined);
+          }
+        } else {
+          // Scrolling, or a stale binding: hide the <video> and let the canvas run
+          // off the playing slide-preview texture instead.
+          hideHeroVideoLayer(currentVideo);
+          currentVideo?.pause();
+          if (currentVideoSrcRef.current) {
+            currentVideoSrcRef.current = "";
             const runtime = slideShaderRef.current;
-            if (
-              runtime &&
-              runtime.texture1.image !== currentVideo &&
-              runtime.texture2.image !== currentVideo
-            ) {
+            if (runtime) {
               runtime.pairKey = "";
             }
           }
         }
-
-        if (!isShowingSettledVideo) {
-          settledVideoRevealSrcRef.current = "";
-          settledVideoRevealCompleteSrcRef.current = "";
-          hideHeroVideoLayer(currentVideo);
-          if (!settledOnWork) {
-            currentVideo?.pause();
-          }
-        }
       }
-      setPosterOverlayVisible(
-        activeSlide.kind === "work" && !canHoldPreviousPair,
-        activeSlide.poster
-      );
+      if (needsMediaFallback) {
+        setLoopOpacity(canvas, 0);
+      }
+      setPosterOverlayVisible(needsMediaFallback, activeSlide.poster);
 
       if (activeSceneRef.current !== activeWorkIndex + 1) {
         commitActiveScene(activeWorkIndex + 1);
-      }
-
-      const captionsCanReveal =
-        !transitionIsMoving &&
-        distanceToNearestSlide < CAPTION_PROGRESS_EPSILON &&
-        Math.abs(visualVelocityRef.current) < CAPTION_VELOCITY_EPSILON &&
-        now - lastScrollInputAtRef.current > CAPTION_REVEAL_IDLE_MS &&
-        now >= captionSuppressedUntilRef.current;
-
-      if (captionsCanReveal) {
-        setCaptionVisibility(true);
-      } else {
-        hideSceneCaptions();
       }
     };
 
@@ -2843,7 +2705,6 @@ export function HeroScrollVideoSection() {
     const addScrollForce = (amount: number) => {
       if (isWorksActiveRef.current) return;
 
-      suppressSceneCaptions(CAPTION_FAST_PASS_SUPPRESS_MS);
       if (isOpeningSceneRef.current) {
         openingVelocityRef.current = clamp(
           openingVelocityRef.current + amount * WHEEL_FORCE * 1.65,
@@ -2872,7 +2733,6 @@ export function HeroScrollVideoSection() {
       if (direction === 0) return;
 
       activeTweenRef.current?.kill();
-      suppressSceneCaptions(CAPTION_FAST_PASS_SUPPRESS_MS);
       lastScrollInputAtRef.current = performance.now();
       scrollDirectionRef.current = direction < 0 ? -1 : 1;
       smoothWheelDirectionRef.current = direction;
@@ -2884,7 +2744,6 @@ export function HeroScrollVideoSection() {
       if (isWorksActiveRef.current || isOpeningSceneRef.current) return;
 
       activeTweenRef.current?.kill();
-      suppressSceneCaptions(CAPTION_FAST_PASS_SUPPRESS_MS);
       lastScrollInputAtRef.current = performance.now();
       if (Math.abs(delta) > 0.0001) {
         scrollDirectionRef.current = delta > 0 ? -1 : 1;
@@ -2951,8 +2810,10 @@ export function HeroScrollVideoSection() {
       if (setSlideShaderPair(initialWorkIndex, modulo(initialWorkIndex + 1, WORKS.length))) {
         renderSlideShader(0, 0);
         gsap.set(canvas, { opacity: 1 });
+        setPosterOverlayVisible(false);
       } else {
         gsap.set(canvas, { opacity: 0 });
+        setPosterOverlayVisible(true, homeSlides[initialWorkIndex + 1]?.poster);
       }
       if (!startInList) {
         setRouteForScene(initialWorkIndex + 1);
@@ -2986,17 +2847,14 @@ export function HeroScrollVideoSection() {
       window.removeEventListener("touchmove", onTouchMove);
       window.removeEventListener("keydown", onKeyDown);
       activeTweenRef.current?.kill();
-      transitionTweenRef.current?.kill();
-      transitionRenderCleanupRef.current?.();
       if (routeCommitTimerRef.current !== null) {
         window.clearTimeout(routeCommitTimerRef.current);
       }
-      if (slidePreviewFlushTimerRef.current !== null) {
-        window.clearTimeout(slidePreviewFlushTimerRef.current);
-        slidePreviewFlushTimerRef.current = null;
+      if (captionRevealTimerRef.current !== null) {
+        window.clearTimeout(captionRevealTimerRef.current);
+        captionRevealTimerRef.current = null;
       }
       currentVideoRef.current?.pause();
-      incomingVideoRef.current?.pause();
       currentVideoTextureRef.current?.texture.dispose();
       currentVideoTextureRef.current = null;
       slidePreviewQueueRef.current = [];
@@ -3152,7 +3010,7 @@ export function HeroScrollVideoSection() {
         <div
           ref={worksLayerRef}
           className={clsx(
-            "fixed left-0 top-0 z-40 h-[100dvh] w-screen overflow-y-auto bg-white opacity-0",
+            "flor-no-scrollbar fixed left-0 top-0 z-40 h-[100dvh] w-screen overflow-y-auto bg-white opacity-0",
             isWorksActive ? "pointer-events-auto" : "pointer-events-none"
           )}
           aria-hidden={!isWorksActive}
@@ -3174,6 +3032,7 @@ export function HeroScrollVideoSection() {
           direction={zoomDirection}
           sourceImageSrc={transitionFrameSrc}
           sourceVideoRef={currentVideoRef}
+          sourceVideoSrc={currentScene.kind === "work" ? currentScene.src : ""}
           targetWorkIndex={transitionWorkIndex}
           worksLayerRef={worksLayerRef}
           onComplete={completeWorksZoom}
@@ -3206,16 +3065,6 @@ export function HeroScrollVideoSection() {
             playsInline
             preload="metadata"
           />
-          <video
-            ref={incomingVideoRef}
-            data-hero-video="incoming"
-            className="pointer-events-none invisible absolute inset-0 h-full w-full object-cover opacity-0"
-            autoPlay={false}
-            loop
-            muted
-            playsInline
-            preload="metadata"
-          />
         </button>
 
         <canvas
@@ -3225,14 +3074,12 @@ export function HeroScrollVideoSection() {
           className="pointer-events-none absolute inset-0 z-[2] h-full w-full opacity-0"
         />
 
-        {currentScene.kind === "work" && (
-          <img
-            ref={posterOverlayRef}
-            src={currentScene.poster}
-            alt=""
-            className="pointer-events-none absolute inset-0 z-[1] h-full w-full object-cover opacity-0 transition-opacity duration-200"
-          />
-        )}
+        <img
+          ref={posterOverlayRef}
+          src={currentScene.poster || heroFrameSrc(1)}
+          alt=""
+          className="pointer-events-none absolute inset-0 z-[4] h-full w-full object-cover opacity-0 transition-opacity duration-150 ease-out"
+        />
 
         <div className="pointer-events-none absolute inset-0 z-[90]">
           <div
@@ -3263,12 +3110,12 @@ export function HeroScrollVideoSection() {
 
             <div className="pointer-events-auto flex items-center gap-3 whitespace-nowrap transition-opacity duration-500">
               <a
-                href="https://facebook.com"
+                href="https://github.com/alanvareschini"
                 target="_blank"
                 rel="noreferrer"
                 className="transition-opacity duration-300 hover:opacity-100"
               >
-                Facebook
+                GitHub
               </a>
               <span>/</span>
               <a
@@ -3322,11 +3169,24 @@ export function HeroScrollVideoSection() {
                 ref={captionLayerRef}
                 className={clsx(
                   "flor-caption-sync-layer w-[min(92vw,1120px)] max-w-none",
-                  isListView || isWorksActive ? "flor-caption-sync-hidden text-[#171411]" : "text-white"
+                  (isListView || isWorksActive) && "flor-caption-sync-hidden text-[#171411]",
+                  !isListView && !isWorksActive && !captionsVisible && "flor-caption-sync-suppressed",
+                  !isListView && !isWorksActive && captionsVisible && "flor-caption-sync-ready text-white"
                 )}
               >
-                {renderCaptionScene(homeSlides[captionPair.from] ?? currentScene, "from")}
-                {renderCaptionScene(homeSlides[captionPair.to] ?? currentScene, "to")}
+                {/* Exit panel: the caption that was on screen, playing Tao's 0.5s
+                    slide-out. Keyed so a fresh mount restarts the animation. */}
+                {captionExitScene !== null && (
+                  <div key={`caption-exit-${captionExitScene}`} className="contents">
+                    {renderCaptionScene(homeSlides[captionExitScene] ?? currentScene, "exit")}
+                  </div>
+                )}
+                {/* Show panel: the settled slide's caption. Hidden until the layer
+                    turns -ready (0.7s debounce), then plays Tao's staggered
+                    slide-in. Keyed per scene so the entrance re-fires per slide. */}
+                <div key={`caption-show-${captionScene}`} className="contents">
+                  {renderCaptionScene(homeSlides[captionScene] ?? currentScene, "show")}
+                </div>
               </div>
 
               <div className="hidden h-14 w-14 md:block" />
@@ -3376,7 +3236,7 @@ export function HeroScrollVideoSection() {
                       "flor-bottom-caption-gradient mt-1 text-[0.95rem] font-semibold italic tracking-[0.05em] text-white/95 md:text-[1.6rem]",
                       !captionsVisible && "flor-bottom-caption-hidden"
                     )}
-                    style={getCaptionGradientStyle(previousScene)}
+                    style={getCaptionGradientStyle(currentScene)}
                   >
                     {previousScene.title}
                   </p>
@@ -3407,7 +3267,7 @@ export function HeroScrollVideoSection() {
                       "flor-bottom-caption-gradient mt-1 text-[0.95rem] font-semibold italic tracking-[0.05em] text-white md:text-[1.6rem]",
                       !captionsVisible && "flor-bottom-caption-hidden"
                     )}
-                    style={getCaptionGradientStyle(nextScene)}
+                    style={getCaptionGradientStyle(currentScene)}
                   >
                     {nextScene.title}
                   </p>

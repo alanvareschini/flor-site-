@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist_Mono, Outfit, Geist } from "next/font/google";
+import { Geist_Mono, Outfit, Geist, Libre_Baskerville } from "next/font/google";
 import "./globals.css";
 import { SakuraLoader } from "@/components/site/sakura-loader";
 import { cn } from "@/lib/utils";
@@ -14,6 +14,12 @@ const outfit = Outfit({
 const geistMono = Geist_Mono({
   subsets: ["latin"],
   variable: "--font-geist-mono"
+});
+
+const libreBaskerville = Libre_Baskerville({
+  subsets: ["latin"],
+  variable: "--font-libre-baskerville",
+  weight: ["400", "700"]
 });
 
 export const metadata: Metadata = {
@@ -47,7 +53,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="pt-BR" data-scroll-behavior="smooth" className={cn(outfit.variable, geistMono.variable, "font-sans", geist.variable)}>
+    <html lang="pt-BR" data-scroll-behavior="smooth" className={cn(outfit.variable, geistMono.variable, libreBaskerville.variable, "font-sans", geist.variable)}>
       <body suppressHydrationWarning>
         <SakuraLoader />
         {children}

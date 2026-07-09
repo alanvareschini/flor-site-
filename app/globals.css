@@ -12,6 +12,22 @@ html {
   scroll-behavior: smooth;
 }
 
+/* Hide the scrollbar chrome (page + works list) while keeping scroll working. */
+html,
+body,
+.flor-no-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE / old Edge */
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+.flor-no-scrollbar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none; /* Chrome / Safari / Edge */
+}
+
 body {
   min-height: 100dvh;
   background:
@@ -224,29 +240,18 @@ body.is-loading {
   transform-origin: center center;
 }
 
+/* ─────────────────────────────────────────────────────────────────
+   SLIDE CAPTIONS — Tao's discrete state machine.
+   The caption is never mapped to scroll progress. It hides the moment the
+   slide index changes (exit panel plays the 0.5s QuartIn slide-out) and the
+   settled slide's caption enters 0.7s after the last change (show panel plays
+   the 0.8s staggered QuartOut slide-in). --caption-reveal-x/y are set from JS
+   once per cycle: direction-signed, 30 scaled by the viewport aspect.
+───────────────────────────────────────────────────────────────── */
+
 .flor-caption-sync-layer {
-  --caption-out: 0;
-  --caption-in: 0;
-  --caption-out-fast: 0;
-  --caption-in-fast: 0;
-  --caption-speed: 1;
-  --caption-direction: 1;
-  --caption-out-clip: 0%;
-  --caption-in-clip: 100%;
-  --caption-from-reveal: 100%;
-  --caption-to-reveal: 0%;
-  --caption-from-opacity: 1;
-  --caption-to-opacity: 0;
-  --caption-from-sub-opacity: 1;
-  --caption-to-sub-opacity: 0;
-  --caption-from-x: 0px;
-  --caption-from-y: 0px;
-  --caption-to-x: 16px;
-  --caption-to-y: 30px;
-  --caption-from-scale: 1;
-  --caption-to-scale: 0.986;
-  --caption-from-blur: 0px;
-  --caption-to-blur: 9px;
+  --caption-reveal-x: 50px;
+  --caption-reveal-y: 30px;
   position: relative;
   height: clamp(12rem, 24vw, 18rem);
   text-align: center;
@@ -254,13 +259,21 @@ body.is-loading {
     opacity 0.36s cubic-bezier(0.19, 1, 0.22, 1),
     transform 0.46s cubic-bezier(0.19, 1, 0.22, 1),
     filter 0.36s cubic-bezier(0.19, 1, 0.22, 1);
-  will-change: opacity, transform, filter;
+  will-change: opacity, transform;
 }
 
+/* Works/list view: the whole layer steps aside. */
 .flor-caption-sync-hidden {
   opacity: 0;
   filter: blur(8px);
   transform: translate3d(0, 18px, 0) scale(0.99);
+}
+
+.flor-caption-sync-suppressed,
+.flor-caption-sync-ready {
+  opacity: 1;
+  filter: blur(0);
+  transform: translate3d(0, 0, 0) scale(1);
 }
 
 .flor-caption-sync-panel {
@@ -271,96 +284,173 @@ body.is-loading {
   justify-content: center;
   text-align: center;
   pointer-events: none;
-  will-change: opacity, transform, filter;
 }
 
 .flor-caption-sync-piece {
   display: block;
-  overflow: hidden;
   transform-origin: center center;
-  will-change: opacity, transform, filter, clip-path;
 }
 
 .flor-caption-sync-heading {
   overflow: visible;
+  font-family: var(--font-libre-baskerville), serif;
 }
 
-.flor-caption-sync-from {
-  filter: blur(var(--caption-from-blur));
-  opacity: var(--caption-from-opacity);
-  transform:
-    translate3d(
-      var(--caption-from-x),
-      var(--caption-from-y),
-      0
-    )
-    scale(var(--caption-from-scale));
-}
-
-.flor-caption-sync-to {
-  filter: blur(var(--caption-to-blur));
-  opacity: var(--caption-to-opacity);
-  transform:
-    translate3d(
-      var(--caption-to-x),
-      var(--caption-to-y),
-      0
-    )
-    scale(var(--caption-to-scale));
-}
-
-.flor-caption-sync-from .flor-caption-sync-piece {
-  clip-path: inset(0 0 var(--caption-out-clip) 0);
-}
-
-.flor-caption-sync-to .flor-caption-sync-piece {
-  clip-path: inset(var(--caption-in-clip) 0 0 0);
-}
-
-.flor-caption-sync-from .flor-caption-sync-kicker,
-.flor-caption-sync-from .flor-caption-sync-title {
-  opacity: var(--caption-from-sub-opacity);
-}
-
-.flor-caption-sync-to .flor-caption-sync-kicker,
-.flor-caption-sync-to .flor-caption-sync-title {
-  opacity: var(--caption-to-sub-opacity);
-}
-
+.flor-caption-sync-kicker,
 .flor-caption-sync-title {
-  transform: translate3d(0, 0, 0);
+  font-family: var(--font-libre-baskerville), serif;
 }
 
-@supports ((mask-image: linear-gradient(#000, transparent)) or (-webkit-mask-image: linear-gradient(#000, transparent))) {
-  .flor-caption-sync-from .flor-caption-sync-piece {
-    -webkit-mask-image: linear-gradient(
-      to bottom,
-      #000 0%,
-      #000 calc(var(--caption-from-reveal) - 10%),
-      transparent var(--caption-from-reveal)
-    );
-    mask-image: linear-gradient(
-      to bottom,
-      #000 0%,
-      #000 calc(var(--caption-from-reveal) - 10%),
-      transparent var(--caption-from-reveal)
-    );
+/* Show panel: invisible until the reveal debounce fires (-ready), then each
+   line plays Tao's entrance. Keyed per scene in JSX, so the animation re-runs
+   exactly once per settle. */
+.flor-caption-sync-show .flor-caption-sync-piece {
+  opacity: 0;
+}
+
+.flor-caption-sync-ready .flor-caption-sync-show .flor-caption-sync-kicker {
+  animation: flor-caption-tao-form 0.92s cubic-bezier(0.34, 0.62, 0.18, 1) both;
+  animation-delay: 0s;
+}
+
+.flor-caption-sync-ready .flor-caption-sync-show .flor-caption-sync-heading {
+  animation: flor-caption-tao-form 1.1s cubic-bezier(0.34, 0.62, 0.18, 1) both;
+  animation-delay: 0.09s;
+}
+
+.flor-caption-sync-ready .flor-caption-sync-show .flor-caption-sync-title {
+  animation: flor-caption-tao-form 1s cubic-bezier(0.34, 0.62, 0.18, 1) both;
+  animation-delay: 0.18s;
+}
+
+.flor-caption-sync-ready .flor-caption-sync-show .flor-video-caption-line {
+  animation: flor-caption-tao-stroke 1s cubic-bezier(0.2, 0.7, 0.18, 1) both;
+  animation-delay: 0.09s;
+}
+
+.flor-caption-sync-ready .flor-caption-sync-show .flor-video-caption-svg {
+  animation: flor-caption-tao-sweep 1.05s cubic-bezier(0.2, 0.7, 0.18, 1) both;
+  animation-delay: 0.09s;
+}
+
+/* Exit panel: mounts already leaving — Tao's hide tween, stagger reversed
+   (title first, kicker last). fill-mode both keeps it invisible after it ends;
+   React unmounts it at the next reveal. */
+.flor-caption-sync-exit .flor-caption-sync-title {
+  animation: flor-caption-tao-hide 0.5s cubic-bezier(0.6, 0.04, 0.78, 0.2) both;
+  animation-delay: 0s;
+}
+
+.flor-caption-sync-exit .flor-caption-sync-heading {
+  animation: flor-caption-tao-hide 0.5s cubic-bezier(0.6, 0.04, 0.78, 0.2) both;
+  animation-delay: 0.05s;
+}
+
+.flor-caption-sync-exit .flor-caption-sync-kicker {
+  animation: flor-caption-tao-hide 0.5s cubic-bezier(0.6, 0.04, 0.78, 0.2) both;
+  animation-delay: 0.1s;
+}
+
+/* While the layer is stepping aside for works/list, freeze panel animations at
+   their current pose instead of restarting them behind the fade. */
+.flor-caption-sync-hidden .flor-caption-sync-piece,
+.flor-caption-sync-hidden .flor-video-caption-line,
+.flor-caption-sync-hidden .flor-video-caption-svg {
+  animation-play-state: paused;
+}
+
+@keyframes flor-caption-tao-form {
+  from {
+    clip-path: inset(86% 0 0 0);
+    filter: blur(9px);
+    opacity: 0;
+    /* Tao's show tween: each line comes in FROM the direction-signed offset
+       (v*x, v*y) with a vertical squash, easing out to rest. */
+    transform:
+      translate3d(var(--caption-reveal-x, 0px), var(--caption-reveal-y, 24px), 0)
+      scaleY(0.5);
   }
 
-  .flor-caption-sync-to .flor-caption-sync-piece {
-    -webkit-mask-image: linear-gradient(
-      to bottom,
-      #000 0%,
-      #000 var(--caption-to-reveal),
-      transparent calc(var(--caption-to-reveal) + 12%)
-    );
-    mask-image: linear-gradient(
-      to bottom,
-      #000 0%,
-      #000 var(--caption-to-reveal),
-      transparent calc(var(--caption-to-reveal) + 12%)
-    );
+  38% {
+    opacity: 1;
   }
+
+  64% {
+    clip-path: inset(0 0 0 0);
+  }
+
+  to {
+    clip-path: inset(0 0 0 0);
+    filter: blur(0);
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scaleY(1);
+  }
+}
+
+/* Tao's hide tween: the leaving line slides out to the mirrored offset (-v*x,
+   -v*y), squashes vertically and fades — ease-in (QuartIn). */
+@keyframes flor-caption-tao-hide {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scaleY(1);
+  }
+
+  to {
+    opacity: 0;
+    transform:
+      translate3d(
+        calc(-1 * var(--caption-reveal-x, 0px)),
+        calc(-1 * var(--caption-reveal-y, 24px)),
+        0
+      )
+      scaleY(0.5);
+  }
+}
+
+@keyframes flor-caption-tao-stroke {
+  from {
+    stroke-dashoffset: 4200;
+    opacity: 0;
+  }
+
+  18% {
+    opacity: 1;
+  }
+
+  to {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+}
+
+@keyframes flor-caption-tao-sweep {
+  from {
+    clip-path: inset(0 100% 0 0);
+    transform: translate3d(-18px, 0, 0);
+  }
+
+  48% {
+    clip-path: inset(0 0 0 0);
+  }
+
+  to {
+    clip-path: inset(0 0 0 0);
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* Bottom nav captions follow Tao's isSlideNavi: they come back ~0.4s AFTER the
+   main caption (reveal debounce + this delay), and leave immediately. */
+.flor-bottom-caption-chrome,
+.flor-bottom-caption-side {
+  transition:
+    opacity 0.34s cubic-bezier(0.19, 1, 0.22, 1) 0.4s,
+    transform 0.38s cubic-bezier(0.19, 1, 0.22, 1) 0.4s;
+}
+
+.flor-bottom-caption-chrome.flor-bottom-caption-hidden,
+.flor-bottom-caption-side.flor-bottom-caption-hidden {
+  transition-delay: 0s, 0s;
 }
 
 .flor-scene-caption-panel {
@@ -389,6 +479,7 @@ body.is-loading {
   animation: flor-caption-form-in 0.48s cubic-bezier(0.19, 1, 0.22, 1) both;
   transform-origin: center bottom;
   will-change: clip-path, opacity, transform, filter;
+  font-family: var(--font-libre-baskerville), serif;
 }
 
 .flor-scene-caption-hidden > p,
@@ -397,6 +488,7 @@ body.is-loading {
   filter: blur(8px);
   opacity: 0;
   transform: translate3d(0, -18px, 0) scale(0.99);
+  font-family: var(--font-libre-baskerville), serif;
   transition:
     clip-path 0.24s cubic-bezier(0.76, 0, 0.24, 1),
     opacity 0.18s cubic-bezier(0.76, 0, 0.24, 1),
@@ -439,6 +531,7 @@ body.is-loading {
   height: clamp(5.6rem, 13vw, 10.8rem);
   margin-left: auto;
   margin-right: auto;
+  font-family: var(--font-libre-baskerville), serif;
 }
 
 .flor-video-caption-svg {
@@ -453,23 +546,19 @@ body.is-loading {
 
 .flor-video-caption-line {
   font-family: var(--font-outfit), sans-serif;
-  font-weight: 430;
+  /* Tao's slide title is solid text (canvas fillText), not an outline — solid
+     fill is what makes the pull/deform reappearance read over the video. */
+  font-weight: 560;
   text-transform: uppercase;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-miterlimit: 1;
-  vector-effect: non-scaling-stroke;
+  stroke: none;
   text-rendering: geometricPrecision;
 }
 
 .flor-video-caption-line-glow {
-  stroke-width: 3.4px;
-  opacity: 0.72;
+  opacity: 0.55;
 }
 
 .flor-video-caption-line-main {
-  stroke-width: 1.22px;
   opacity: 1;
 }
 
@@ -494,16 +583,14 @@ body.is-loading {
   background-clip: text;
   animation: flor-bottom-caption-flow 3.6s linear infinite alternate;
   transition:
-    opacity 0.24s cubic-bezier(0.19, 1, 0.22, 1),
-    transform 0.3s cubic-bezier(0.19, 1, 0.22, 1),
-    filter 0.24s cubic-bezier(0.19, 1, 0.22, 1);
-  will-change: opacity, transform, filter;
+    opacity 0.34s cubic-bezier(0.19, 1, 0.22, 1),
+    transform 0.38s cubic-bezier(0.19, 1, 0.22, 1);
+  will-change: opacity, transform;
 }
 
 .flor-bottom-caption-hidden {
   opacity: 0;
-  filter: blur(4px);
-  transform: translate3d(0, 6px, 0);
+  transform: translate3d(0, 8px, 0);
 }
 
 @keyframes flor-bottom-caption-flow {

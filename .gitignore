@@ -6,7 +6,21 @@ dist
 tsconfig.tsbuildinfo
 .env*.local
 
+# MCP config holds an API key — keep out of git
+.mcp.json
+
 # Local analysis and generated scratch files
 tmp*
 .tmp*
 .analysis*
+
+# Original (pre-optimization) video masters — kept locally as backup, not in git
+public/works-videos-original/
+
+# Debug/scratch captures from browser sessions
+agent-scroll-check.png
+preview-frame-*.png
+*.debug-baseline.png
+
+# Vercel CLI local metadata
+.vercel
