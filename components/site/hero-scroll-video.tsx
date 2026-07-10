@@ -339,14 +339,26 @@ function nearestLoopTarget(current: number, target: number, total: number) {
   return current + delta;
 }
 
+// The frames intro plays once per VISIT: sessionStorage clears when the tab is
+// closed, so entering the site again brings it back, while in-site navigation
+// and reloads in the same session skip straight to the works loop.
+// (localStorage kept it hidden FOREVER after the very first view.)
 function getOpeningAvailableOnLoad() {
   if (typeof window === "undefined") return true;
   if (window.location.pathname !== ROOT_PATH) return false;
 
   try {
-    return window.localStorage.getItem(OPENING_SEEN_KEY) !== "1";
+    return window.sessionStorage.getItem(OPENING_SEEN_KEY) !== "1";
   } catch {
     return true;
+  }
+}
+
+function markOpeningSeen() {
+  try {
+    window.sessionStorage.setItem(OPENING_SEEN_KEY, "1");
+  } catch {
+    // Storage can be blocked in private browsing; the in-memory flags still keep this session correct.
   }
 }
 
@@ -2525,12 +2537,6 @@ export function HeroScrollVideoSection() {
     setCaptionScene(activeSceneRef.current);
     syncCaptionRevealOffsets();
 
-    try {
-      window.localStorage.setItem(OPENING_SEEN_KEY, "1");
-    } catch {
-      // localStorage can be blocked in private browsing; the in-memory flag still keeps this load correct.
-    }
-
     gsap.set(section, { opacity: 0 });
     gsap.to(section, {
       opacity: 1,
@@ -2565,6 +2571,9 @@ export function HeroScrollVideoSection() {
     const finishOpening = () => {
       if (!isOpeningSceneRef.current) return;
 
+      // Seen = the user actually scrolled THROUGH it (not merely loaded the
+      // page) — abandoning mid-intro and reloading replays it.
+      markOpeningSeen();
       hideSceneCaptions();
       isOpeningSceneRef.current = false;
       openingAvailableRef.current = false;
