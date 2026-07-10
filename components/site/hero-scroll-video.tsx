@@ -957,7 +957,9 @@ function GithubOctocat() {
       const length = Math.hypot(dx, dy) || 1;
       const reach = Math.min(1, length / 90);
 
-      targetX = (dx / length) * 0.7 * reach;
+      // Pupils travel radially but always stay inside the sclera
+      // (sclera r 1.15 - pupil r 0.62 ≈ 0.53 max offset).
+      targetX = (dx / length) * 0.5 * reach;
       targetY = (dy / length) * 0.5 * reach;
       if (!raf) raf = window.requestAnimationFrame(tick);
     };
@@ -973,8 +975,8 @@ function GithubOctocat() {
     <svg
       ref={svgRef}
       viewBox="0 0 16 16"
-      width="22"
-      height="22"
+      width="30"
+      height="30"
       aria-hidden="true"
       className="block"
     >
@@ -3438,8 +3440,11 @@ export function HeroScrollVideoSection() {
                 target="_blank"
                 rel="noreferrer"
                 aria-label="GitHub"
-                className="transition-opacity duration-300 opacity-90 hover:opacity-100"
+                className="group flex items-center gap-3 opacity-90 transition-opacity duration-300 hover:opacity-100"
               >
+                <span className="translate-x-3 opacity-0 transition-all duration-300 ease-out group-hover:translate-x-0 group-hover:opacity-100">
+                  GitHub
+                </span>
                 <GithubOctocat />
               </a>
             </div>
