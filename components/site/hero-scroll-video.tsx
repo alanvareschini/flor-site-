@@ -963,6 +963,9 @@ export function HeroScrollVideoSection() {
   // until the hero's own preview for that work is ready.
   const sharedSlideVideoRef = useRef<{ index: number; video: HTMLVideoElement } | null>(null);
   const sharedSlideTextureRef = useRef<{ video: HTMLVideoElement; texture: THREE.VideoTexture } | null>(null);
+  // The live element the works zoom overlay is currently morphing (Tao flies the
+  // playing video itself into/out of the card, never a still).
+  const zoomSourceVideoRef = useRef<HTMLVideoElement | null>(null);
   const slideRafRef = useRef<number | null>(null);
   const targetWorkPositionRef = useRef(0);
   const workPositionRef = useRef(0);
@@ -2121,13 +2124,55 @@ export function HeroScrollVideoSection() {
     }
   };
 
+  // The <video> element that is actually feeding the slide canvas right now —
+  // shared grid element, preview-pool entry or the warmed currentVideo. This is
+  // what the works zoom must morph (Tao flies the playing plane itself; zooming
+  // a poster while the canvas froze underneath read as "trava numa imagem").
+  const resolveLiveSlideVideo = (workIndex: number): HTMLVideoElement | null => {
+    const slide = homeSlides[workIndex + 1];
+    if (slide?.kind !== "work" || !slide.src) return null;
+
+    const shared = sharedSlideVideoRef.current;
+    if (
+      shared &&
+      shared.index === workIndex &&
+      shared.video.readyState >= 2 &&
+      shared.video.videoWidth > 0
+    ) {
+      return shared.video;
+    }
+
+    const entry = slidePreviewEntriesRef.current.get(workIndex);
+    if (entry?.state === "ready" && hasRenderableVideoFrame(entry.video)) {
+      return entry.video;
+    }
+
+    const currentVideo = currentVideoRef.current;
+    if (
+      currentVideo &&
+      currentVideoSrcRef.current === slide.src &&
+      hasRenderableVideoFrame(currentVideo)
+    ) {
+      return currentVideo;
+    }
+
+    return null;
+  };
+
   const openWorks = () => {
     if (isWorksActive) return;
 
     clearWorksTimingTimers();
     removeCardOverlay();
+    const activeWorkIndex = clamp(Math.max(1, activeSceneRef.current) - 1, 0, WORKS.length - 1);
+    // Keep the live slide video PLAYING and hand it to the zoom overlay — the
+    // old path paused it here, freezing the hero on a still for the whole
+    // flight. It is released from the shared bridge but only paused once the
+    // zoom lands (completeWorksZoom).
+    zoomSourceVideoRef.current =
+      activeSceneRef.current === 0 ? null : resolveLiveSlideVideo(activeWorkIndex);
+    zoomSourceVideoRef.current?.play().catch(() => undefined);
     if (sharedSlideVideoRef.current) {
-      sharedSlideVideoRef.current.video.pause();
       sharedSlideVideoRef.current = null;
     }
     returnSceneRef.current = activeSceneRef.current;
@@ -2166,7 +2211,13 @@ export function HeroScrollVideoSection() {
     if (!isWorksActiveRef.current || isZoomingWorksRef.current) return;
 
     clearWorksTimingTimers();
-    setTransitionWorkIndex(clamp(Math.max(1, returnSceneRef.current) - 1, 0, WORKS.length - 1));
+    const returnWorkIndex = clamp(Math.max(1, returnSceneRef.current) - 1, 0, WORKS.length - 1);
+    // Fly the return work's OWN preview element (the same one the hero canvas
+    // will render on landing) — the card grows into a playing video and the
+    // handoff is frame-identical, mirroring Tao's zoom-in.
+    zoomSourceVideoRef.current = resolveLiveSlideVideo(returnWorkIndex);
+    zoomSourceVideoRef.current?.play().catch(() => undefined);
+    setTransitionWorkIndex(returnWorkIndex);
     setZoomDirection("close");
     setIsZoomingWorks(true);
     worksLayerRef.current?.scrollTo({ top: 0 });
@@ -2368,10 +2419,19 @@ export function HeroScrollVideoSection() {
       setIsWorksView(false);
       setRouteForScene(returnSceneRef.current);
       // Back on the slide: reveal its caption on the same 0.7s debounce as any
-      // other landing (isWorksActiveRef flips before the timer fires).
+      // other landing (isWorksActiveRef flips before the timer fires). The zoom
+      // source element stays playing — it IS the slide texture now.
+      zoomSourceVideoRef.current = null;
       syncCaptionRevealOffsets();
       restartCaptionRevealTimer();
+      return;
     }
+
+    // Landed on the works list: the flight is over, stop decoding the clip that
+    // flew into the card (pool entries would be re-paused by the loop anyway;
+    // shared grid elements have no other owner while the list is up).
+    zoomSourceVideoRef.current?.pause();
+    zoomSourceVideoRef.current = null;
   };
 
   useEffect(() => clearWorksTimingTimers, []);
@@ -2497,7 +2557,17 @@ export function HeroScrollVideoSection() {
 
     const updateWorksLoop = (frameScale: number, elapsed: number, now: number) => {
       if (isWorksActiveRef.current) {
-        pauseSlidePreviewPlayback();
+        if (isZoomingWorksRef.current) {
+          // Mid works-zoom the hero canvas is still (partially) visible under the
+          // overlay — keep presenting the settled slide with its LIVE textures so
+          // nothing freezes; playback pauses only once the list has fully landed.
+          const runtime = slideShaderRef.current;
+          if (runtime?.hasRendered && Number.isFinite(runtime.lastProgress)) {
+            renderSlideShader(runtime.lastProgress, elapsed);
+          }
+        } else {
+          pauseSlidePreviewPlayback();
+        }
         return;
       }
 
@@ -2906,8 +2976,9 @@ export function HeroScrollVideoSection() {
       }
 
       if (path !== WORKS_PATH && isWorksView) {
-        setZoomDirection("close");
-        setIsZoomingWorks(true);
+        // Same flight as the close button: resolves the live return video and
+        // flies it out of the card.
+        closeWorks();
         return;
       }
 
@@ -3031,8 +3102,7 @@ export function HeroScrollVideoSection() {
           active={isZoomingWorks}
           direction={zoomDirection}
           sourceImageSrc={transitionFrameSrc}
-          sourceVideoRef={currentVideoRef}
-          sourceVideoSrc={currentScene.kind === "work" ? currentScene.src : ""}
+          getSourceVideo={() => zoomSourceVideoRef.current}
           targetWorkIndex={transitionWorkIndex}
           worksLayerRef={worksLayerRef}
           onComplete={completeWorksZoom}
