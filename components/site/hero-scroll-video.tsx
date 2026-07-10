@@ -47,11 +47,11 @@ const LOOP_SCROLL_DVH = 720;
 const WHEEL_FORCE = 0.0002;
 const TOUCH_FORCE = 0.0005;
 const KEY_FORCE = 0.05;
-// A capped, decaying velocity so the frames intro takes ~6 unhurried wheel
+// A capped, decaying velocity so the frames intro takes ~10-12 unhurried wheel
 // notches instead of blowing through all 689 frames on a single flick.
-const OPENING_MAX_SCROLL_VELOCITY = 0.028;
+const OPENING_MAX_SCROLL_VELOCITY = 0.018;
 const OPENING_VELOCITY_DECAY = 0.82;
-const OPENING_WHEEL_MULTIPLIER = 0.9;
+const OPENING_WHEEL_MULTIPLIER = 0.6;
 const TAO_SMOOTH_SCROLL_FORCE = 0.002;
 const TAO_SMOOTH_SCROLL_DECAY = 0.9;
 const TAO_SMOOTH_SCROLL_LIMIT = 0.02;
@@ -2624,7 +2624,9 @@ export function HeroScrollVideoSection() {
       openingVelocityRef.current *= Math.pow(OPENING_VELOCITY_DECAY, frameScale);
 
       const progress = clamp(openingProgressRef.current, 0, 1);
-      if (progress > 0.035) {
+      // The FLOR ALVA title rides the whole intro; it only slides out on the
+      // final stretch, just before the first work sweeps in.
+      if (progress > 0.85) {
         dismissCaptions();
       }
       setFrame(1 + smoothStep(0, 0.88, progress) * (HERO_FRAME_COUNT - 1));
@@ -3267,11 +3269,11 @@ export function HeroScrollVideoSection() {
             )}
           >
             <a
-              href="#home"
+              href={WORKS_PATH}
               onClick={(event) => {
-                if (!isWorksActiveRef.current && window.location.pathname !== WORKS_PATH) return;
                 event.preventDefault();
-                closeWorks();
+                if (isWorksActiveRef.current) return;
+                openWorks();
               }}
               className="pointer-events-auto inline-flex items-center gap-3 whitespace-nowrap transition-opacity duration-500 hover:opacity-70"
             >
