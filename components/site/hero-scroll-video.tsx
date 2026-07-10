@@ -2635,16 +2635,42 @@ export function HeroScrollVideoSection() {
     // so the decoded images stay cached for the scrub.
     let openingPreloadCancelled = false;
     const preloadedOpeningFrames: HTMLImageElement[] = [];
+    // Contiguous frontier of loaded frames: over a real network (Vercel) the
+    // scrub must never step past what has actually arrived, or the intro shows
+    // gaps and stutters. The frontier only advances when every frame up to that
+    // point is in.
+    const openingFrameLoaded = new Uint8Array(HERO_FRAME_COUNT + 1);
+    openingFrameLoaded[1] = 1;
+    let openingFrameFrontier = 1;
+    const advanceOpeningFrontier = () => {
+      while (
+        openingFrameFrontier < HERO_FRAME_COUNT &&
+        openingFrameLoaded[openingFrameFrontier + 1] === 1
+      ) {
+        openingFrameFrontier += 1;
+      }
+    };
+
     if (startInOpening) {
       let nextPreloadFrame = 1;
       const pumpOpeningPreload = () => {
         if (openingPreloadCancelled || nextPreloadFrame > HERO_FRAME_COUNT) return;
 
+        const frameNumber = nextPreloadFrame++;
         const image = new Image();
+        const settle = () => {
+          openingFrameLoaded[frameNumber] = 1;
+          advanceOpeningFrontier();
+          pumpOpeningPreload();
+        };
         image.decoding = "async";
-        image.onload = pumpOpeningPreload;
-        image.onerror = pumpOpeningPreload;
-        image.src = heroFrameSrc(nextPreloadFrame++);
+        // Low network priority: the frame warm-up must not starve the work
+        // VIDEOS of bandwidth on real connections (it did on Vercel — slides
+        // sat on posters while 40MB of frames hogged the pipe).
+        (image as HTMLImageElement & { fetchPriority?: string }).fetchPriority = "low";
+        image.onload = settle;
+        image.onerror = settle;
+        image.src = heroFrameSrc(frameNumber);
         preloadedOpeningFrames.push(image);
       };
 
@@ -2756,6 +2782,8 @@ export function HeroScrollVideoSection() {
       commitActiveScene(1);
     };
 
+    let openingHeldProgress = 0;
+
     const updateOpening = (frameScale: number) => {
       openingProgressRef.current = clamp(
         openingProgressRef.current + openingVelocityRef.current * frameScale,
@@ -2763,6 +2791,18 @@ export function HeroScrollVideoSection() {
         1.02
       );
       openingVelocityRef.current *= Math.pow(OPENING_VELOCITY_DECAY, frameScale);
+
+      // Hold the scrub at the network frontier: if the next frame hasn't
+      // downloaded yet the intro pauses gracefully (progress rolls back,
+      // momentum bleeds off) instead of skipping over missing frames.
+      const desiredFrame =
+        1 + smoothStep(0, 0.88, clamp(openingProgressRef.current, 0, 1)) * (HERO_FRAME_COUNT - 1);
+      if (Math.round(desiredFrame) > openingFrameFrontier) {
+        openingProgressRef.current = openingHeldProgress;
+        openingVelocityRef.current *= 0.6;
+      } else {
+        openingHeldProgress = openingProgressRef.current;
+      }
 
       const progress = clamp(openingProgressRef.current, 0, 1);
       // The FLOR ALVA title rides the whole intro; it only slides out on the
