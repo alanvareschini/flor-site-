@@ -970,7 +970,14 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
           item.zoomUniforms.uListPosition.value.set(startX, startY);
           item.zoomUniforms.uListSize.value.set(rect.width, rect.height);
           item.zoomUniforms.uSlideSize.value.set(api.viewport.width, api.viewport.height);
-          item.zoomUniforms.uTextureAspect.value = listAspect;
+          // Aspect of the SOURCE pixels, not the card box — using the card's
+          // aspect here cropped the clip whenever the two didn't match exactly.
+          item.zoomUniforms.uTextureAspect.value =
+            videoTexture && item.video.videoWidth > 0
+              ? item.video.videoWidth / Math.max(item.video.videoHeight, 1)
+              : item.stillImage && item.stillImage.naturalWidth > 0
+                ? item.stillImage.naturalWidth / Math.max(item.stillImage.naturalHeight, 1)
+                : 16 / 9;
           item.zoomUniforms.uListAspect.value = listAspect;
           item.zoomUniforms.uSlideAspect.value = slideAspect;
           item.zoomUniforms.uZoomScale.value = Math.min(api.viewport.width, api.viewport.height) * 0.065;
@@ -1133,6 +1140,10 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
             if (zoomTexture) {
               zoomTexture.needsUpdate = true;
               item.zoomUniforms.uTexture.value = zoomTexture;
+              if (item.video.videoWidth > 0) {
+                item.zoomUniforms.uTextureAspect.value =
+                  item.video.videoWidth / Math.max(item.video.videoHeight, 1);
+              }
             } else {
               item.zoomUniforms.uTexture.value = item.stillTexture;
             }

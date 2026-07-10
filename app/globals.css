@@ -308,29 +308,32 @@ body.is-loading {
   opacity: 0;
 }
 
+/* Tao's show tween exactly: 0.8s QuartOut, per-line stagger [0, .05, .1]. The
+   fast ease start makes the caption READ immediately — the previous slower
+   bezier felt like the captions "took too long to appear". */
 .flor-caption-sync-ready .flor-caption-sync-show .flor-caption-sync-kicker {
-  animation: flor-caption-tao-form 0.92s cubic-bezier(0.34, 0.62, 0.18, 1) both;
+  animation: flor-caption-tao-form 0.8s cubic-bezier(0.165, 0.84, 0.44, 1) both;
   animation-delay: 0s;
 }
 
 .flor-caption-sync-ready .flor-caption-sync-show .flor-caption-sync-heading {
-  animation: flor-caption-tao-form 1.1s cubic-bezier(0.34, 0.62, 0.18, 1) both;
-  animation-delay: 0.09s;
+  animation: flor-caption-tao-form 0.8s cubic-bezier(0.165, 0.84, 0.44, 1) both;
+  animation-delay: 0.05s;
 }
 
 .flor-caption-sync-ready .flor-caption-sync-show .flor-caption-sync-title {
-  animation: flor-caption-tao-form 1s cubic-bezier(0.34, 0.62, 0.18, 1) both;
-  animation-delay: 0.18s;
+  animation: flor-caption-tao-form 0.8s cubic-bezier(0.165, 0.84, 0.44, 1) both;
+  animation-delay: 0.1s;
 }
 
 .flor-caption-sync-ready .flor-caption-sync-show .flor-video-caption-line {
-  animation: flor-caption-tao-stroke 1s cubic-bezier(0.2, 0.7, 0.18, 1) both;
-  animation-delay: 0.09s;
+  animation: flor-caption-tao-stroke 0.8s cubic-bezier(0.165, 0.84, 0.44, 1) both;
+  animation-delay: 0.05s;
 }
 
 .flor-caption-sync-ready .flor-caption-sync-show .flor-video-caption-svg {
-  animation: flor-caption-tao-sweep 1.05s cubic-bezier(0.2, 0.7, 0.18, 1) both;
-  animation-delay: 0.09s;
+  animation: flor-caption-tao-sweep 0.85s cubic-bezier(0.165, 0.84, 0.44, 1) both;
+  animation-delay: 0.05s;
 }
 
 /* Exit panel: mounts already leaving — Tao's hide tween, stagger reversed

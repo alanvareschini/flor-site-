@@ -1084,7 +1084,7 @@ export function HeroScrollVideoSection() {
   // the slide index changes (midpoint crossing) and re-show it 0.7s after the
   // LAST change. A pure debounce — while the user keeps scrolling the timer keeps
   // resetting, so exactly ONE caption (the settled slide's) is ever revealed.
-  const restartCaptionRevealTimer = () => {
+  const restartCaptionRevealTimer = (delay = CAPTION_REVEAL_DEBOUNCE_MS) => {
     if (captionRevealTimerRef.current !== null) {
       window.clearTimeout(captionRevealTimerRef.current);
     }
@@ -1096,7 +1096,7 @@ export function HeroScrollVideoSection() {
 
       setCaptionExitScene(null);
       setCaptionVisibility(true);
-    }, CAPTION_REVEAL_DEBOUNCE_MS);
+    }, delay);
   };
 
   const cancelCaptionRevealTimer = () => {
@@ -2351,13 +2351,12 @@ export function HeroScrollVideoSection() {
     renderTargetPair();
 
     commitActiveScene(targetScene, true);
-    // Tao reveals the slide captions ~0.7s AFTER the slide lands (delay(.7) ->
-    // isSlideText in his main.js). Entering on a stable video first and then
-    // drawing the captions in separates the two events — without this, video
-    // takeover + caption pop landed on the same frame and read as a screen swap.
-    // Runs unconditionally: commitActiveScene skips the cycle when re-selecting
-    // the work that was already active.
+    // Tao's enable() flips isSlideText TRUE right at zoom completion — the 0.7s
+    // debounce is only for scroll crossings. Reveal almost immediately here (a
+    // short beat so the canvas presents first). Runs unconditionally:
+    // commitActiveScene skips the cycle when re-selecting the same work.
     hideCaptionsForSceneChange(targetScene);
+    restartCaptionRevealTimer(160);
     setIsListView(false);
     setIsZoomingWorks(false);
     setIsWorksView(false);
@@ -2458,12 +2457,12 @@ export function HeroScrollVideoSection() {
     if (zoomDirection === "close") {
       setIsWorksView(false);
       setRouteForScene(returnSceneRef.current);
-      // Back on the slide: reveal its caption on the same 0.7s debounce as any
-      // other landing (isWorksActiveRef flips before the timer fires). The zoom
-      // source element stays playing — it IS the slide texture now.
+      // Back on the slide: Tao re-shows the caption right at zoom completion
+      // (enable() sets isSlideText immediately) — reveal after a short beat.
+      // The zoom source element stays playing — it IS the slide texture now.
       zoomSourceVideoRef.current = null;
       syncCaptionRevealOffsets();
-      restartCaptionRevealTimer();
+      restartCaptionRevealTimer(160);
       return;
     }
 
