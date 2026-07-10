@@ -920,6 +920,76 @@ function WorksZoomTransition({
   );
 }
 
+// GitHub Octocat mark whose pupils track the cursor. The eyes sit in the
+// mark's negative-space face and inherit currentColor, so they read on both
+// the dark hero and the light works chrome.
+function GithubOctocat() {
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const pupilsRef = useRef<SVGGElement | null>(null);
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    const pupils = pupilsRef.current;
+    if (!svg || !pupils) return;
+
+    let raf = 0;
+    let targetX = 0;
+    let targetY = 0;
+    let x = 0;
+    let y = 0;
+
+    const tick = () => {
+      x += (targetX - x) * 0.16;
+      y += (targetY - y) * 0.16;
+      pupils.setAttribute("transform", `translate(${x.toFixed(3)} ${y.toFixed(3)})`);
+      raf =
+        Math.abs(targetX - x) > 0.005 || Math.abs(targetY - y) > 0.005
+          ? window.requestAnimationFrame(tick)
+          : 0;
+    };
+
+    const onMove = (event: MouseEvent) => {
+      const rect = svg.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height * 0.35;
+      const dx = event.clientX - centerX;
+      const dy = event.clientY - centerY;
+      const length = Math.hypot(dx, dy) || 1;
+      const reach = Math.min(1, length / 90);
+
+      targetX = (dx / length) * 0.7 * reach;
+      targetY = (dy / length) * 0.5 * reach;
+      if (!raf) raf = window.requestAnimationFrame(tick);
+    };
+
+    window.addEventListener("mousemove", onMove, { passive: true });
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  return (
+    <svg
+      ref={svgRef}
+      viewBox="0 0 16 16"
+      width="22"
+      height="22"
+      aria-hidden="true"
+      className="block"
+    >
+      <path
+        fill="currentColor"
+        d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+      />
+      <g ref={pupilsRef}>
+        <circle cx="5.7" cy="5.4" r="0.62" fill="currentColor" />
+        <circle cx="10.3" cy="5.4" r="0.62" fill="currentColor" />
+      </g>
+    </svg>
+  );
+}
+
 type SlideTextureSlot = {
   image: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement;
   width: number;
@@ -3362,23 +3432,15 @@ export function HeroScrollVideoSection() {
               <span className={clsx("h-px w-10 transition-colors duration-500", lineTone)} />
             </a>
 
-            <div className="pointer-events-auto flex items-center gap-3 whitespace-nowrap transition-opacity duration-500">
+            <div className="pointer-events-auto flex items-center whitespace-nowrap transition-opacity duration-500">
               <a
                 href="https://github.com/alanvareschini"
                 target="_blank"
                 rel="noreferrer"
-                className="transition-opacity duration-300 hover:opacity-100"
+                aria-label="GitHub"
+                className="transition-opacity duration-300 opacity-90 hover:opacity-100"
               >
-                GitHub
-              </a>
-              <span>/</span>
-              <a
-                href="https://vimeo.com"
-                target="_blank"
-                rel="noreferrer"
-                className="transition-opacity duration-300 hover:opacity-100"
-              >
-                Vimeo
+                <GithubOctocat />
               </a>
             </div>
           </div>

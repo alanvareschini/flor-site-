@@ -1912,6 +1912,18 @@ export function CenasGridSection({
             </div>
           ))}
         </div>
+
+        {/* ── Copyright / license ─────────────────────────────────────── */}
+        <footer className="mt-24 border-t border-[#e4e0da] pt-6 pb-2">
+          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <p className="font-mono text-[9px] uppercase tracking-[0.32em] text-[#999]">
+              © 2026 Flor Alva · Alan Vareschini · Todos os direitos reservados
+            </p>
+            <p className="font-mono text-[9px] uppercase tracking-[0.32em] text-[#bbb]">
+              Vídeos sob licença Pexels · Homenagem a taotajima.jp
+            </p>
+          </div>
+        </footer>
       </div>
     </section>
   );
