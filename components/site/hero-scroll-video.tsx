@@ -438,14 +438,15 @@ void main() {
 
   float len2 = length(listXY);
   float listStrength = clamp(1.0 - len2 / AREA2, 0.25, 1.0);
+  // Tao's zoom sway, verbatim — no extra centre-fold bulge (it wasn't in his
+  // code and read as a tremor mid-flight).
   float sway = (
     sin(uTime * 1.0 + len2 / 256.0) * 128.0 +
     sin(uTime * 2.0 + len2 / 32.0) * 64.0
   ) * uSway;
-  float centreFold = sin(uv.x * PI) * sin(uv.y * PI) * uSway * 42.0;
 
   vec4 listPosition = vec4(listXY, sway * listStrength, 1.0);
-  vec4 slidePosition = vec4(slideXY, uZoomScale + sway + centreFold, 1.0);
+  vec4 slidePosition = vec4(slideXY, uZoomScale + sway, 1.0);
 
   vMorph = corner;
   vDark = 1.0;
@@ -1817,7 +1818,11 @@ export function HeroScrollVideoSection() {
         }
         if (!sharedSlideTextureRef.current || sharedSlideTextureRef.current.video !== sv) {
           sharedSlideTextureRef.current?.texture.dispose();
-          const texture = configureShaderTexture(new THREE.VideoTexture(sv), false);
+          // needsUpdate at creation: a fresh VideoTexture only uploads on the
+          // next rVFC (i.e., while PLAYING) — sampling it before that uploads
+          // nothing and the transition wipes in BLACK. Forcing one upload grabs
+          // the frame the element is already holding, playing or paused.
+          const texture = configureShaderTexture(new THREE.VideoTexture(sv), true);
           texture.generateMipmaps = false;
           sharedSlideTextureRef.current = { video: sv, texture };
         }
@@ -1843,7 +1848,9 @@ export function HeroScrollVideoSection() {
 
       if (!cached || cached.src !== slide.src || cached.texture.image !== currentVideo) {
         cached?.texture.dispose();
-        const texture = configureShaderTexture(new THREE.VideoTexture(currentVideo), false);
+        // needsUpdate at creation — see sharedSlideTexture note (empty texture
+        // samples black until the first rVFC upload).
+        const texture = configureShaderTexture(new THREE.VideoTexture(currentVideo), true);
         texture.generateMipmaps = false;
         currentVideoTextureRef.current = { src: slide.src, texture };
       }
@@ -1866,7 +1873,10 @@ export function HeroScrollVideoSection() {
 
     if (video && previewEntry && hasRenderableVideoFrame(video)) {
       if (!previewEntry.texture) {
-        previewEntry.texture = configureShaderTexture(new THREE.VideoTexture(video), false);
+        // needsUpdate at creation — see sharedSlideTexture note (empty texture
+        // samples black until the first rVFC upload; the flash showed up as a
+        // black tear sweeping through the scroll transition).
+        previewEntry.texture = configureShaderTexture(new THREE.VideoTexture(video), true);
         previewEntry.texture.generateMipmaps = false;
       }
 

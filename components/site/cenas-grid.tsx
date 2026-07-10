@@ -103,14 +103,16 @@ const cardZoomVertexShader = `
 
     float len2 = length(listXY);
     float listStrength = clamp(1.0 - len2 / AREA2, 0.25, 1.0);
+    // Tao's zoom sway, verbatim (his list-item vertex has only these two sine
+    // terms — the extra "centre fold" bulge we had here was not in his code and
+    // read as a weird tremor mid-flight).
     float sway = (
       sin(uTime * 1.0 + len2 / 256.0) * 128.0 +
       sin(uTime * 2.0 + len2 / 32.0) * 64.0
     ) * uSway;
-    float centreFold = sin(uv.x * PI) * sin(uv.y * PI) * uSway * 42.0;
 
     vec4 listPosition = vec4(listXY, sway * listStrength, 1.0);
-    vec4 slidePosition = vec4(slideXY, uZoomScale + sway + centreFold, 1.0);
+    vec4 slidePosition = vec4(slideXY, uZoomScale + sway, 1.0);
 
     vMorph = corner;
     // No darkening at any point of the flight — the clip flies at full
@@ -440,6 +442,9 @@ const GlobalWorksHoverCanvas = forwardRef<WorksHoverCanvasHandle>(
       texture.wrapS = THREE.ClampToEdgeWrapping;
       texture.wrapT = THREE.ClampToEdgeWrapping;
       texture.generateMipmaps = false;
+      // Upload the currently held frame right away — a fresh VideoTexture only
+      // uploads on the next rVFC, sampling black until then.
+      texture.needsUpdate = true;
       return texture;
     };
 
