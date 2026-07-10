@@ -1007,6 +1007,9 @@ export function HeroScrollVideoSection() {
   // The live element the works zoom overlay is currently morphing (Tao flies the
   // playing video itself into/out of the card, never a still).
   const zoomSourceVideoRef = useRef<HTMLVideoElement | null>(null);
+  // Intro -> first work handoff: the same liquid wipe as between videos,
+  // sweeping from the last intro frame into the first clip.
+  const openingHandoffRef = useRef<{ progress: number } | null>(null);
   const slideRafRef = useRef<number | null>(null);
   const targetWorkPositionRef = useRef(0);
   const workPositionRef = useRef(0);
@@ -2609,7 +2612,73 @@ export function HeroScrollVideoSection() {
       openingProgressRef.current = 1;
       targetWorkPositionRef.current = 0;
       workPositionRef.current = 0;
-      scrollVelocityRef.current = Math.max(scrollVelocityRef.current, 0.018);
+      scrollVelocityRef.current = 0;
+      smoothScrollImpulseRef.current = 0;
+      touchImpulseRef.current = 0;
+      visualVelocityRef.current = 0;
+
+      // Leave the intro with the SAME liquid wipe used between videos: bind the
+      // last intro frame as the outgoing texture and the first work as the
+      // incoming one, then tween the shader progress. When the wipe completes
+      // the loop rebuilds the normal (0,1) pair at progress 0 — the incoming
+      // video is the same element, so the landing is seamless.
+      const runtime = slideShaderRef.current;
+      const firstEntry = slidePreviewEntriesRef.current.get(0);
+      if (firstEntry?.state === "ready") {
+        firstEntry.video.play().catch(() => undefined);
+      }
+
+      if (runtime && frame.complete && frame.naturalWidth > 0) {
+        const targetSlot = createSlotFromSlide(homeSlides[1] ?? openingSlide, 0);
+
+        if (targetSlot) {
+          runtime.imageTexture1.image = frame;
+          runtime.imageTexture1.needsUpdate = true;
+          runtime.texture1 = runtime.imageTexture1;
+          runtime.uniforms.texture1.value = runtime.texture1;
+          runtime.uniforms.uvRate1.value = coverUvRate(
+            frame.naturalWidth,
+            frame.naturalHeight,
+            runtime.width,
+            runtime.height
+          );
+
+          if (targetSlot.texture) {
+            runtime.texture2 = targetSlot.texture;
+          } else {
+            runtime.imageTexture2.image = targetSlot.image;
+            runtime.imageTexture2.needsUpdate = true;
+            runtime.texture2 = runtime.imageTexture2;
+          }
+          runtime.uniforms.texture2.value = runtime.texture2;
+          runtime.uniforms.uvRate2.value = coverUvRate(
+            targetSlot.width,
+            targetSlot.height,
+            runtime.width,
+            runtime.height
+          );
+          runtime.pairKey = "opening-handoff";
+          runtime.hasRendered = false;
+
+          const handoff = { progress: 0 };
+          openingHandoffRef.current = handoff;
+          gsap.to(handoff, {
+            progress: 1,
+            duration: 1.2,
+            ease: "power3.inOut",
+            onComplete: () => {
+              if (openingHandoffRef.current !== handoff) return;
+
+              openingHandoffRef.current = null;
+              const settledRuntime = slideShaderRef.current;
+              if (settledRuntime) {
+                settledRuntime.pairKey = "";
+              }
+            }
+          });
+        }
+      }
+
       gsap.set(frame, { opacity: 0 });
       gsap.set(canvas, { opacity: 1 });
       commitActiveScene(1);
@@ -2656,6 +2725,18 @@ export function HeroScrollVideoSection() {
         } else {
           pauseSlidePreviewPlayback();
         }
+        return;
+      }
+
+      // Intro handoff in flight: render the frame->first-work wipe and hold the
+      // scroll machinery still until it lands (progress capped just under 1 —
+      // the shader wraps with fract(), so exactly 1 would flip back to
+      // texture1 for a frame).
+      const openingHandoff = openingHandoffRef.current;
+      if (openingHandoff) {
+        renderSlideShader(Math.min(openingHandoff.progress, 0.9995), elapsed, 0, 1);
+        setLoopOpacity(frame, 0);
+        setLoopOpacity(canvas, 1);
         return;
       }
 
