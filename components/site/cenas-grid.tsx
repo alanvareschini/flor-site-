@@ -113,10 +113,9 @@ const cardZoomVertexShader = `
     vec4 slidePosition = vec4(slideXY, uZoomScale + sway + centreFold, 1.0);
 
     vMorph = corner;
-    // Dim slightly mid-flight, but land at FULL brightness: the hero canvas takes
-    // over at 100% right after the zoom, so ending dark caused a brightness pop
-    // (captured on screencast: video settled at 70% then jumped to 100%).
-    vDark = mix(1.0, 0.7, corner * (1.0 - smoothstep(0.7, 0.98, uProgress)));
+    // No darkening at any point of the flight — the clip flies at full
+    // brightness from card to fullscreen and back.
+    vDark = 1.0;
     gl_Position = projectionMatrix * viewMatrix * mix(listPosition, slidePosition, corner);
   }
 `;

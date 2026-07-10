@@ -795,12 +795,36 @@ function WorksZoomTransition({
       };
       const startedAt = performance.now();
 
+      // Tao's list plane tracks the item's position EVERY frame (scroll +
+      // layout). A one-shot rect goes stale while the grid is still settling —
+      // entry drop, late list height, clamped scroll near the LAST cards — and
+      // the flight then lands beside the real card. Re-read the layout rect per
+      // frame so the landing pose is always the card's current true position.
+      const trackTargetRect = () => {
+        const root = worksLayerRef.current;
+        const target = root?.querySelector<HTMLElement>(
+          `[data-work-media-index="${targetWorkIndex}"]`
+        );
+        if (!root || !target) return;
+
+        const rect = getLayoutRectInScrollRoot(root, target);
+        if (rect.width <= 20 || rect.height <= 20) return;
+
+        uniforms.uListPosition.value.set(
+          rect.left + rect.width / 2 - width / 2,
+          height / 2 - (rect.top + rect.height / 2)
+        );
+        uniforms.uListSize.value.set(rect.width, rect.height);
+        uniforms.uListAspect.value = rect.width / Math.max(rect.height, 1);
+      };
+
       const apply = () => {
         const e = progress.p1 + progress.p2;
         const t = smoothStep(0, 0.9, e);
         const sway = t < 0.5 ? 2 * t : 2 * (1 - t);
         const listAlpha = 1 - smoothStep(0.1, 0.6, e);
 
+        trackTargetRect();
         uniforms.uTime.value = (performance.now() - startedAt) / 1000;
         uniforms.uSway.value = sway;
         uniforms.uProgress.value = t;
@@ -1075,11 +1099,21 @@ export function HeroScrollVideoSection() {
     }, CAPTION_REVEAL_DEBOUNCE_MS);
   };
 
+  const cancelCaptionRevealTimer = () => {
+    if (captionRevealTimerRef.current !== null) {
+      window.clearTimeout(captionRevealTimerRef.current);
+      captionRevealTimerRef.current = null;
+    }
+  };
+
   // Move the on-screen caption to the exit panel (where it plays Tao's 0.5s
   // QuartIn slide-out) and hide the show panel. The show panel is only ever
   // hidden while its content is NOT on screen, so this never snaps visibly.
+  // While the works layer is up the caption layer isn't on screen at all, so
+  // exiting content there would REPLAY the previous work's caption right when
+  // a new one is picked from the grid — skip the exit panel in that case.
   const dismissCaptions = () => {
-    if (captionsVisibleRef.current) {
+    if (captionsVisibleRef.current && !isWorksActiveRef.current) {
       setCaptionExitScene(captionSceneRef.current);
     }
     hideSceneCaptions();
@@ -2175,6 +2209,12 @@ export function HeroScrollVideoSection() {
     if (sharedSlideVideoRef.current) {
       sharedSlideVideoRef.current = null;
     }
+    // Mark captions as OFF while the list is up: dismissCaptions won't replay
+    // the old caption on the next work pick, and flipping back to visible on
+    // return re-fires the staggered entrance (Tao re-shows text on every land).
+    cancelCaptionRevealTimer();
+    setCaptionVisibility(false);
+    setCaptionExitScene(null);
     returnSceneRef.current = activeSceneRef.current;
     setTransitionWorkIndex(clamp(Math.max(1, activeSceneRef.current) - 1, 0, WORKS.length - 1));
     setShouldMountWorks(true);
@@ -2958,6 +2998,9 @@ export function HeroScrollVideoSection() {
       if (path === WORKS_PATH && !isWorksView) {
         clearWorksTimingTimers();
         removeCardOverlay();
+        cancelCaptionRevealTimer();
+        setCaptionVisibility(false);
+        setCaptionExitScene(null);
         setShouldMountWorks(true);
         setIsListView(false);
         setIsZoomingWorks(false);
