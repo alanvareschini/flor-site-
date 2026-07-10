@@ -47,8 +47,11 @@ const LOOP_SCROLL_DVH = 720;
 const WHEEL_FORCE = 0.0002;
 const TOUCH_FORCE = 0.0005;
 const KEY_FORCE = 0.05;
-const OPENING_MAX_SCROLL_VELOCITY = 0.24;
+// A capped, decaying velocity so the frames intro takes ~6 unhurried wheel
+// notches instead of blowing through all 689 frames on a single flick.
+const OPENING_MAX_SCROLL_VELOCITY = 0.028;
 const OPENING_VELOCITY_DECAY = 0.82;
+const OPENING_WHEEL_MULTIPLIER = 0.9;
 const TAO_SMOOTH_SCROLL_FORCE = 0.002;
 const TAO_SMOOTH_SCROLL_DECAY = 0.9;
 const TAO_SMOOTH_SCROLL_LIMIT = 0.02;
@@ -264,7 +267,8 @@ const captionPalettes = [
 
 function getCaptionPalette(slide: HomeSlide) {
   if (slide.kind !== "work") {
-    return ["#ffffff", "#ffd9e8", "#ff87bd", "#ffffff"];
+    // Opening title: white leaning into silver-gray (no pink).
+    return ["#ffffff", "#eef0f3", "#c3c9d1", "#f4f5f7"];
   }
 
   const index = Math.max(0, WORKS.findIndex((work) => worksPath(work) === slide.path));
@@ -2550,6 +2554,30 @@ export function HeroScrollVideoSection() {
     warmSlidePosterLibrary();
     requestSlidePreviewRange(initialWorkIndex);
 
+    // The frames intro is only fluid if every webp is already fetched+decoded
+    // when the scrub reaches it — swapping src on demand stuttered. Warm the
+    // whole sequence in the background with limited concurrency, keeping refs
+    // so the decoded images stay cached for the scrub.
+    let openingPreloadCancelled = false;
+    const preloadedOpeningFrames: HTMLImageElement[] = [];
+    if (startInOpening) {
+      let nextPreloadFrame = 1;
+      const pumpOpeningPreload = () => {
+        if (openingPreloadCancelled || nextPreloadFrame > HERO_FRAME_COUNT) return;
+
+        const image = new Image();
+        image.decoding = "async";
+        image.onload = pumpOpeningPreload;
+        image.onerror = pumpOpeningPreload;
+        image.src = heroFrameSrc(nextPreloadFrame++);
+        preloadedOpeningFrames.push(image);
+      };
+
+      for (let i = 0; i < 8; i += 1) {
+        pumpOpeningPreload();
+      }
+    }
+
     const setFrame = (frameNumber: number) => {
       const nextFrame = Math.max(1, Math.min(HERO_FRAME_COUNT, Math.round(frameNumber)));
       if (nextFrame === lastFrame) return;
@@ -2835,7 +2863,7 @@ export function HeroScrollVideoSection() {
 
       if (isOpeningSceneRef.current) {
         openingVelocityRef.current = clamp(
-          openingVelocityRef.current + amount * WHEEL_FORCE * 1.65,
+          openingVelocityRef.current + amount * WHEEL_FORCE * OPENING_WHEEL_MULTIPLIER,
           -OPENING_MAX_SCROLL_VELOCITY,
           OPENING_MAX_SCROLL_VELOCITY
         );
@@ -2869,7 +2897,17 @@ export function HeroScrollVideoSection() {
     };
 
     const addTouchImpulse = (delta: number) => {
-      if (isWorksActiveRef.current || isOpeningSceneRef.current) return;
+      if (isWorksActiveRef.current) return;
+
+      if (isOpeningSceneRef.current) {
+        // Touch drives the frames intro too (it used to dead-end here).
+        openingVelocityRef.current = clamp(
+          openingVelocityRef.current - delta * TOUCH_FORCE * OPENING_WHEEL_MULTIPLIER,
+          -OPENING_MAX_SCROLL_VELOCITY,
+          OPENING_MAX_SCROLL_VELOCITY
+        );
+        return;
+      }
 
       activeTweenRef.current?.kill();
       lastScrollInputAtRef.current = performance.now();
@@ -2965,6 +3003,8 @@ export function HeroScrollVideoSection() {
     slideRafRef.current = window.requestAnimationFrame(animate);
 
     return () => {
+      openingPreloadCancelled = true;
+      preloadedOpeningFrames.length = 0;
       if (slideRafRef.current !== null) {
         window.cancelAnimationFrame(slideRafRef.current);
       }
